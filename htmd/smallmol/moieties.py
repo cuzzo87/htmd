@@ -27,7 +27,7 @@ class MoietyFragmenter:
         else:
             raise WrongInputType("Not a valid SmallMol object. Provide a valid one")
 
-        self.moieties = []
+        self.moieties = self.getMoieties()
         
 
     def _isHeteroAtom(self, atom):
@@ -198,7 +198,7 @@ class MoietyFragmenter:
         fgs = self._merge(fgs)
 
         for fg in fgs:
-            fg.completeFg()
+            fg.completeFg(self._mol._mol)
 
         return fgs
 
@@ -232,14 +232,21 @@ class MoietyFragmenter:
 
         return fgs_merged
 
-    def depictFGs(self, fgs, filename=None, ipython=False, optimize=False):
+    def depictFGs(self, fgs=None, filename=None, ipython=False, optimize=False, atomnames=False):
         from rdkit.Chem.Draw import IPythonConsole
         from rdkit.Chem.Draw import MolToImage
         from rdkit.Chem.Draw import rdMolDraw2D
         from IPython.display import SVG
         from rdkit.Chem.AllChem import EmbedMolecule
 
+        if fgs == None:
+            fgs = self.moieties
+
         drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
+        opts = drawer.drawOptions()
+        if atomnames:
+            for i in range(self._mol._mol.GetNumAtoms()):
+                opts.atomLabels[i] = self._mol._mol.GetAtomWithIdx(i).GetSymbol()+str(i)
         
         highlightAtoms = [a for fg in fgs for a in fg.AtomsIdx ] + [a for fg in fgs for a in fg.EnviromentsIdx ]
         highlightColors = { a : self._colors[i%len(self._colors)] for i in range(len(fgs)) for a in fgs[i].AtomsIdx }
@@ -277,6 +284,7 @@ class Moiety:
         self.atoms = atoms
         self.bonds = self._getBonds(atoms)
         self.enviroments = []
+        self._mol = None
 
         self.bondsenvironments = []
 
@@ -355,9 +363,84 @@ class Moiety:
         self.atoms = self.atoms + moiety.atoms
         self.bonds = self._getBonds(self.atoms) 
 
-    def completeFg(self):
+    def completeFg(self, mol):
         self._getEnvironments()
+        self._keepHydrogens()
+
+        self._mol = self._getMoietyMol(mol)
+
+        #self.name = self._getName()
         
+    def _getMoietyMol(self, mol):
+        envAtoms = self.Enviroments
+        envAtoms_ids = self.EnviromentsIdx
+
+        atoms = self.Atoms
+        atoms_ids = self.AtomsIdx
+
+        other_atoms_del = []
+
+        for env_atomId in envAtoms_ids:
+            env_atom = mol.GetAtomWithIdx(env_atomId)
+            atoms_bonded = [ b.GetOtherAtomIdx(env_atomId) for b in env_atom.GetBonds() ]
+            atoms_bonded_elements = [ mol.GetAtomWithIdx(a).GetSymbol() for a in atoms_bonded ]
+            start_atoms_del = [ aId for aId, aEl in zip(atoms_bonded, atoms_bonded_elements) if aId not in atoms_ids and aEl != 'H' ] 
+            for aId_del in start_atoms_del:
+                other_atoms_del.extend(self._findAtomToDel(mol, aId_del, env_atomId))
+
+        other_atoms_del = list(set(other_atoms_del))
+        new_mol = self.trim_atoms(mol, envAtoms_ids, other_atoms_del)
+
+        return new_mol
+
+    def trim_atoms(self,  mol, atomIds, atomIds_delete):
+        rwmol = Chem.RWMol(mol)
+        for atomId in atomIds:
+            atom = rwmol.GetAtomWithIdx(atomId)
+            #atom.SetAtomicNum(0)
+            atom.SetIsotope(0)
+            atom.SetFormalCharge(0)
+            atom.SetIsAromatic(False)
+            atom.SetNumExplicitHs(0)
+        
+        for aId in sorted(atomIds_delete, reverse=True):
+            rwmol.RemoveAtom(aId)
+            
+        return rwmol.GetMol()
+
+    def _get_atoms_to_visit(self, atom, seen_ids):
+        neighbor_ids = []
+        neighbor_atoms = []
+        #print(atom.GetIdx())
+        for bond in atom.GetBonds():
+            neighbor_atom = bond.GetOtherAtom(atom)
+            #print(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+            neighbor_id = neighbor_atom.GetIdx()
+            #print('Neighbors: ',  neighbor_id)
+            if neighbor_id not in seen_ids:
+                neighbor_ids.append(neighbor_id) 
+                neighbor_atoms.append(neighbor_atom)
+            #print(neighbor_ids)
+            #print()
+        
+        return neighbor_ids, neighbor_atoms
+
+    def _findAtomToDel(self, mol, start_atomId, ignore_atomId):
+        seen_ids = {start_atomId, ignore_atomId}
+        atom_ids = [start_atomId]
+        stack = [mol.GetAtomWithIdx(start_atomId)]
+    
+        while stack:
+            atom = stack.pop()
+            atom_ids_to_visit, atoms_to_visit = self._get_atoms_to_visit(atom, seen_ids)
+            atom_ids.extend(atom_ids_to_visit)
+            stack.extend(atoms_to_visit)
+            seen_ids.update(atom_ids_to_visit)
+        return atom_ids
+
+
+    def _keepHydrogens(self):
+
         atoms = [a for a in self.Atoms if (a.GetSymbol() == 'C' and a.GetHybridization() == SP2) or a.GetSymbol() in self._heteroatoms ]
         bond_double = [ b for b in self.Bonds if b.GetBondType() == DOUBLE ]
 
@@ -366,13 +449,12 @@ class Moiety:
             carbon_atoms = [[b.GetBeginAtom(), b.GetEndAtom() ] for b in bond_double if [b.GetBeginAtom().GetSymbol(), b.GetEndAtom().GetSymbol()] == ['C', 'C'] ]
             hydrogens_alkene = [ a.GetIdx() for b in carbon_atoms for c in b for a in c.GetNeighbors() if a.GetSymbol() == 'H' ]
         
-
         # Doubt: hydrogens on alkene. Useful for cys/trans. I prefer clean it
         hydrogens = [ atom for a in  atoms for atom in a.GetNeighbors() if atom.GetSymbol() == 'H' if atom.GetIdx() not in hydrogens_alkene]
         self.atoms = self.atoms + [ h for h in hydrogens if not self._hasAtomIdx(h.GetIdx()) ]
         self.bonds = self._getBonds(self.atoms)
 
-        self.name = self._getName() 
+        
 
     def _getName(self):
         from collections import Counter
@@ -445,11 +527,6 @@ class Moiety:
 
         return _atoms, _bonds        
 
-
-
-
-
-
     def _getEnvironments(self):
         carbons = [atom for a in self.Atoms for atom in a.GetNeighbors() if atom.GetSymbol() == 'C']
         carbons_env = [c for c in carbons if c.GetIdx() not in self.AtomsIdx]
@@ -459,8 +536,7 @@ class Moiety:
 
     def get_elements(self):
         elements = [ atom.GetSymbol() for atom in self.Atoms ]
-        return elements
-                   
+        return elements          
 
     def depict(self, filename=None, ipython=False):
         from rdkit.Chem.Draw import IPythonConsole
@@ -496,7 +572,7 @@ class Moiety:
         
         rmol.RemoveAtom(0)
 
-        
+        rmol.UpdatePropertyCache(strict=False)
         EmbedMolecule(rmol)
         drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
         

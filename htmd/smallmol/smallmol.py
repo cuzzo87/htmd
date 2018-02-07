@@ -289,6 +289,52 @@ class SmallMol:
             charges.append(a.GetFormalCharge())
         return np.array(charges)
 
+    def depict(self, sketch=False, filename=None, ipython=False, optimize=False):
+        from rdkit.Chem import MolToSmiles, MolFromSmiles
+        from rdkit.Chem.AllChem import Compute2DCoords
+        from rdkit.Chem.Draw import MolToImage
+        from IPython.display import SVG
+        from rdkit.Chem.Draw import rdMolDraw2D
+        from rdkit.Chem.AllChem import EmbedMolecule
+        
+
+
+        if sketch and optimize:
+            raise ValueError('Impossible to use optmization in  2D sketch representation')
+
+        drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
+
+        if optimize:
+            EmbedMolecule(self._mol)
+
+        _m = self._mol
+        
+        if sketch:
+            _smile = MolToSmiles( self._mol )
+            _m = MolFromSmiles(_smile)
+            Compute2DCoords(_m)
+            
+        drawer.DrawMolecule(_m)
+        
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+
+        if filename != None:
+            f = open(filename, 'w')
+            f.write(svg)
+            f.close()
+
+        if ipython:
+            from rdkit.Chem.Draw import IPythonConsole
+            from IPython.display import SVG
+            svg = svg.replace('svg:', '')
+            return SVG(svg)
+        else:
+            return None
+
+        
+
+
 
 class SmallMolStack:
     """
