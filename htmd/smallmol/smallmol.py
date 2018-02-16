@@ -2,6 +2,7 @@ import os
 import multiprocessing
 import math
 import numpy as np
+from copy import deepcopy
 
 from rdkit import Chem
 from rdkit import RDConfig
@@ -84,6 +85,9 @@ class SmallMol:
         if addHs:
             self._mol = Chem.RemoveHs(self._mol)
             self._mol = Chem.AddHs(self._mol, addCoords=True)
+
+    def copy(self):
+        return deepcopy(self)
 
     def get_coords(self):
         """
@@ -289,41 +293,54 @@ class SmallMol:
             charges.append(a.GetFormalCharge())
         return np.array(charges)
 
-    def depict(self, sketch=False, filename=None, ipython=False, optimize=False):
-        from rdkit.Chem import MolToSmiles, MolFromSmiles
+    def depict(self, sketch=False, filename=None, ipython=False, optimize=False, atomlabels=False, removeHs=True):
         from rdkit.Chem.AllChem import Compute2DCoords
         from rdkit.Chem.Draw import MolToImage
         from IPython.display import SVG
         from rdkit.Chem.Draw import rdMolDraw2D
         from rdkit.Chem.AllChem import EmbedMolecule
+        from rdkit.Chem import RemoveHs
         
-
-
         if sketch and optimize:
             raise ValueError('Impossible to use optmization in  2D sketch representation')
 
-        drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
+        _m = deepcopy(self._mol)
+        
+        
+        # activate 2D represention by set z coords as 0 and optimizing x,y coords (rdkit.Chem.AllChem.Compute2DCoords)
+        if sketch:
+            Compute2DCoords(_m)
+        if removeHs:
+            _m = Chem.RemoveHs(_m)
 
+        # init picture
+        drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
+        # get options handler
+        opts = drawer.drawOptions()
+
+        # activate atom labels for atoms
+        if atomlabels:
+            for i in range(_m.GetNumAtoms()):
+                opts.atomLabels[i] = _m.GetAtomWithIdx(i).GetSymbol()+str(i)
+
+        # activate 3D coords optimization by (rdkit.Chem.AllChem.EmbedMolecule)
         if optimize:
             EmbedMolecule(self._mol)
-
-        _m = self._mol
         
-        if sketch:
-            _smile = MolToSmiles( self._mol )
-            _m = MolFromSmiles(_smile)
-            Compute2DCoords(_m)
-            
+        # draw molecule
         drawer.DrawMolecule(_m)
-        
         drawer.FinishDrawing()
+
+        # svg object
         svg = drawer.GetDrawingText()
 
+        # activate saving into a file
         if filename != None:
             f = open(filename, 'w')
             f.write(svg)
             f.close()
 
+        # activate the rendering for jupiter-notebook
         if ipython:
             from rdkit.Chem.Draw import IPythonConsole
             from IPython.display import SVG
@@ -331,10 +348,6 @@ class SmallMol:
             return SVG(svg)
         else:
             return None
-
-        
-
-
 
 class SmallMolStack:
     """

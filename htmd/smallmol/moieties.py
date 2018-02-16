@@ -1,5 +1,6 @@
 from rdkit import Chem
 from htmd.smallmol.smallmol import SmallMol
+from copy import deepcopy
 
 AROMATIC = Chem.rdchem.BondType.AROMATIC
 SINGLE = Chem.rdchem.BondType.SINGLE
@@ -200,6 +201,7 @@ class MoietyFragmenter:
         for fg in fgs:
             fg.completeFg(self._mol._mol)
 
+
         return fgs
 
     def _merge(self, fgs):
@@ -228,34 +230,57 @@ class MoietyFragmenter:
                 fgs_merged.append(fg)
                 
         if not completed:
-            self._merge(fgs_merged)
+            fgs_merged = self._merge(fgs_merged)
 
         return fgs_merged
 
-    def depictFGs(self, fgs=None, filename=None, ipython=False, optimize=False, atomnames=False):
+    def hasFunctionalGrop(self, fgtype, fgorder='all'):
+        if fgorder not in ['all', 1, 2, 3, 4, 'aromatic']:
+            raise ValueError('fgorder can be "CC(=O)NC(=O)Call", 1, 2, 3, 4, "aromatic"')
+        
+        matches = [moi for moi in self.moieties if moi.fgtype == fgtype]  
+
+        if fgorder != 'all':
+            matches = [moi for moi in self.moieties if moi.fgtype == fgtype and moi.fgorder == fgorder]  
+
+        if len(matches) != 0:
+            return True
+
+        return False
+
+    def depictFGs(self, fgs=None, sketch=False, filename=None, ipython=False, optimize=False, atomlabels=False):
         from rdkit.Chem.Draw import IPythonConsole
         from rdkit.Chem.Draw import MolToImage
         from rdkit.Chem.Draw import rdMolDraw2D
         from IPython.display import SVG
-        from rdkit.Chem.AllChem import EmbedMolecule
+        from rdkit.Chem import MolToSmiles, MolFromSmiles
+        from rdkit.Chem.AllChem import EmbedMolecule, Compute2DCoords
+
+        if sketch and optimize:
+            raise ValueError('Impossible to use optmization in  2D sketch representation')
+
+        _m = deepcopy(self._mol._mol)
+        
+        if sketch:
+            Compute2DCoords(_m)
 
         if fgs == None:
             fgs = self.moieties
 
         drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
         opts = drawer.drawOptions()
-        if atomnames:
-            for i in range(self._mol._mol.GetNumAtoms()):
-                opts.atomLabels[i] = self._mol._mol.GetAtomWithIdx(i).GetSymbol()+str(i)
+        if atomlabels:
+            for i in range(_m.GetNumAtoms()):
+                opts.atomLabels[i] = _m.GetAtomWithIdx(i).GetSymbol()+str(i)
         
         highlightAtoms = [a for fg in fgs for a in fg.AtomsIdx ] + [a for fg in fgs for a in fg.EnviromentsIdx ]
         highlightColors = { a : self._colors[i%len(self._colors)] for i in range(len(fgs)) for a in fgs[i].AtomsIdx }
 
         if optimize:
-            EmbedMolecule(self._mol._mol)
+            EmbedMolecule(_m)
         
 
-        drawer.DrawMolecule(self._mol._mol, highlightAtoms=highlightAtoms, highlightBonds=[], highlightAtomColors=highlightColors)
+        drawer.DrawMolecule(_m, highlightAtoms=highlightAtoms, highlightBonds=[], highlightAtomColors=highlightColors)
         
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
@@ -277,6 +302,26 @@ class Moiety:
     
     _bondtypes = [AROMATIC, SINGLE, DOUBLE, TRIPLE]
     _colors = [(1,0,0), (0,1,0), (0, 0,1), (1,1,0), (1,0,1), (0,1,1)]
+
+    _smile_name = {'CC(=O)N':'amide', 'CN':'amine', 'CS':'thiol', 'CO':'alcohol', 'C1NC1':'aziridine',
+                   'CC(OC)(O)':'hemiacetal', 'CC(OC)(OC)':'acetal', 'CC(C)(OC)(OC)':'ketal', 'CC(C)(OC)(O)':'hemiketal',
+                   'C=C':'alkene', 'C#C':'alkine', 'CC(=O)C':'ketone', 'CC=N':'aldimine', 'CC(C)=N':'ketimine', 'CC(C)=N':'ketimine',
+                   'CC(=O)':'aldehyde', 'CC(=O)Cl':'acylhalide', 'CC(=O)Br':'acylhalide', 'CC(=O)F':'acylhalide',
+                   'CO[N+](O)(=O)':'nitrate', 'C[N+](O)(=O)':'nitro', 'CC#N':'nitrile', 'C[N+]#C':'isonitrile',
+                   'COC(=O)OC':'carbonate', 'C(=O)O':'carboxylic_acid', 'COC(=O)C':'ester', 'COOC':'peroxide', 'CN=C=O':'isocyanate',
+                   'COC':'ether', 'CC(=O)NC(=O)C':'imide', 'CN=[N+]=[N-]':'azide', 'CN=NC':'azo', 'COC#N':'cyanate',
+                   'CON=O':'nitrite', 'CN=O':'nitroso',  'CC=NO':'aldoxime', 'CC(C)=NO':'ketoxime', 'CSC':'thioether',
+                   'CSSC':'disulfide', 'CS(=O)C':'sulfoxide', 'CS(=O)(=O)C':'sulfone', 'CS(=O)O':'sulfunilic_acid',
+                   'CS(=O)(=O)O':'solfonic_acid', 'CSC#N':'thiocyanate', 'CN=C=S':'isothiocyanate', 'CC(=S)C':'thioketone',
+                   'CC(=S)':'thial', 'CC(=O)SC':'thioester', 'CS(=O)(=O)N':'sulfonamide', 'NC(=N)N':'guanidinium',
+                   'CC(=O)NO':'hydroxamic_acid', 'CC(=N)N':'amidine'}
+    _fg_priority = {'ketal':5, 'hemiketal':4, 'amide':2, 'acetal':3, 'carbonate':1, 'alcohol':0, 'ketimine':2, 'aldimine':1, 
+                    'amine':0, 'peroxide':1, 'ether':1, 'hemiacetal':2, 'acylhalide':2, 'aldehyde':1, 'carboxylic_acid':2, 
+                    'ester':3, 'imide':3, 'azide':1, 'azo':1, 'cyanate':2, 'isocyanate':1, 'nitrate':1, 'nitro':1, 'isonitrile':1,
+                    'nitrite':1, 'nitroso':1, 'aldoxime':2, 'ketoxime':3, 'thiol':0, 'thioether':1, 'disulfide':1,
+                    'sulfoxide':2, 'sulfone':3, 'sulfunilic_acid':2, 'solfonic_acid':3, 'thiocyanate':2,
+                    'isothiocyanate':1, 'thial':0, 'thioketone':1, 'thioester':2, 'sulfonamide':1, 'guanidinium':1,
+                    'hydroxamic_acid':3, 'amidine':2, 'aziridine':1}
     
     def __init__(self, atoms):
         
@@ -288,8 +333,8 @@ class Moiety:
 
         self.bondsenvironments = []
 
-        self.name = None
-        self.subcategory = None
+        self.fgtype = None
+        self.fgorder = None
         
     def _getBonds(self, atoms, exclude=None):
         atoms_idx = [ a.GetIdx() for a in atoms]
@@ -344,12 +389,19 @@ class Moiety:
             return True
         return False
 
+    # def isMerged(self, moiety):
+    #     moiety_atoms_idx = moiety.AtomsIdx
+    #     for atom in moiety_atoms_idx:
+    #         if not self._hasAtomIdx(atom):
+    #             return False
+    #     return True
     def isMerged(self, moiety):
         moiety_atoms_idx = moiety.AtomsIdx
+        
         for atom in moiety_atoms_idx:
-            if not self._hasAtomIdx(atom):
-                return False
-        return True
+            if  self._hasAtomIdx(atom):
+                return True
+        return False
 
     def isConnected(self, moiety):
         moiety_atoms_idx = [ a.GetIdx() for atom in moiety.Atoms for a in atom.GetNeighbors() ]
@@ -369,7 +421,71 @@ class Moiety:
 
         self._mol = self._getMoietyMol(mol)
 
-        #self.name = self._getName()
+        self.fgtype = self._getFgType()
+        if self.fgtype != None:
+            self.fgorder = self._getFgOrder(self.fgtype)
+
+    def _getFgType(self):
+        from rdkit.Chem import MolFromSmiles
+        fgtype = []
+        for smi in self._smile_name.keys():
+            m_ref = MolFromSmiles(smi)
+            #print(smi, self._mol.HasSubstructMatch(m_ref))
+            if self._mol.HasSubstructMatch(m_ref):
+                fgtype.append(self._smile_name[smi])
+        print(fgtype)
+        if len(fgtype) == 0:
+            fgtype = None
+            return fgtype
+        elif len(fgtype) > 1:
+            fgpriorities = [ self._fg_priority[fg] for fg in fgtype ]
+            #print(fgpriorities)
+            #print(sorted(list(zip(fgtype, fgpriorities)), key=lambda x:x[1], reverse=True))
+            fgtype = sorted(list(zip(fgtype, fgpriorities)), key=lambda x:x[1], reverse=True)[0][0]
+            #print(fgtype)
+            return fgtype
+
+        return fgtype[0]
+
+    def _getFgOrder(self,fgtype):
+        from collections import Counter
+
+        order = None
+        if fgtype in ['amide', 'aziridine', 'sulfonamide', 'amidine', 'amine', 'aldimine', 'ketimine', 'azide']:
+            Natom = [a for a in self.Atoms if a.GetSymbol() == 'N']
+            Natom = [n for n in Natom if n.GetDegree() >= 3]
+            if len(Natom) == 0:
+                raise ValueError("DEBUG. No nitrogen in functional group. Probably wrong assignement") 
+            Natom = Natom[0]
+            order = sum([ 1 for a in Natom.GetNeighbors() if a.GetSymbol() != 'H' and a.GetSymbol() != 'N'])
+
+        # 2 env atoms Oxygen based
+        if fgtype in ['hemiacetal', 'acetal', 'hemiketal', 'ketal']:
+            Oatoms = [a for a in self.Atoms if a.GetSymbol() == 'O']
+            if len(Oatoms) == 0:
+                raise ValueError("DEBUG. No oxygen in functional group. Probably wrong assignement") 
+            carbons_idxs = [atom_other.GetIdx()  for Oatom in Oatoms for atom_other in Oatom.GetNeighbors() if atom_other.GetSymbol() == 'C' ]
+            
+            carbons_count = Counter(carbons_idxs)
+            idx_carbon = list( carbons_count.values()).index( max(carbons_count.values()) ) 
+            carbon_id = list(carbons_count.keys())[idx_carbon]
+            carbon = self.Atoms[self.AtomsIdx.index(carbon_id)]
+            Catom = [a for a in carbon.GetNeighbors() if a.GetSymbol() == 'C' ][0]
+            if Catom.GetIsAromatic():
+                return 'aromatic'
+            order = sum([ 1 for a in Catom.GetNeighbors() if a.GetSymbol() == 'C' and a.GetIdx() != carbon.GetIdx() ])
+
+        # 1 env atom
+        if fgtype in ['cyanate', 'isocyanate', 'nitrile', 'isonitrile', 'nitrite', 'nitroso', 'aldoxime',
+                      'ketoxime', 'thiol', 'sulfunilic_acid', 'solfonic_acid', 'thiocyanate', 'isothiocyanate',
+                      'thial', 'hydroxamic_acid', 'alcohol', 'aldehyde', 'carboxylic_acid', 'acylhalide']:
+            Catom = [a for a in self.Enviroments][0]
+            if Catom.GetIsAromatic():
+                return 'aromatic'
+            #order = sum([ 1 for a in Catom.GetNeighbors() if a.GetSymbol() != 'H' and a.GetSymbol() not in self._heteroatoms]) 
+            order = sum([ 1 for a in Catom.GetNeighbors() if a.GetSymbol() != 'H' and a.GetIdx() not in self.AtomsIdx])
+
+        return order
         
     def _getMoietyMol(self, mol):
         envAtoms = self.Enviroments
@@ -454,55 +570,6 @@ class Moiety:
         self.atoms = self.atoms + [ h for h in hydrogens if not self._hasAtomIdx(h.GetIdx()) ]
         self.bonds = self._getBonds(self.atoms)
 
-        
-
-    def _getName(self):
-        from collections import Counter
-
-        elements = self.get_elements()
-        atoms = self.Atoms
-        bonds = self.Bonds
-        counts_atoms = Counter(elements) 
-
-        # print("Naming")
-        # print(">>> ", counts_atoms)
-
-        atoms =  self.get_elements()
-        if set(['O', 'N', 'S']) < set(atoms):
-            # print("Moiety with S, N, O")
-            name, subcategory = self._getNameSNO()
-
-    def _getNameSNO(self):
-
-        # sulfunamide
-        name, subcategory = ('sulfunamide', self._getSubcategory('N')) if self._isSulfunamide() else (None, None)
-
-        return name, subcategory
-
-    def _isSulfunamide(self):
-        from collections import Counter 
-        _ref = [ ('N', SINGLE),  ('O', DOUBLE), ('O', DOUBLE),  ]
-        
-        elements = self.get_elements()
-        atoms = self.Atoms
-        bonds = self.Bonds
-        enviroments = self.Enviroments
-        bondsenvironments = self.BondsEnvironments
-        counts_atoms = Counter(elements)
-
-        if counts_atoms['O'] != 2 or counts_atoms['N'] != 1 or counts_atoms['S'] != 1:
-            return False
-        
-        atom_sulfur = atoms[elements.index('S')]
-        atoms_n, bonds_n = self._getNeighbors(atom_sulfur)
-        
-        atoms_bonds_pair = list(zip(atoms_n, bonds_n))
-
-        return Counter(atoms_bonds_pair) == Counter(_ref)
-        
-
-    def _getSubcategory(self, atom):
-        print("DAJE")
 
     def _getNeighbors(self, atom):
         import itertools
@@ -538,7 +605,8 @@ class Moiety:
         elements = [ atom.GetSymbol() for atom in self.Atoms ]
         return elements          
 
-    def depict(self, filename=None, ipython=False):
+    def depict(self, sketch=False, filename=None, ipython=False, optimize=False):
+        from rdkit.Chem.AllChem import Compute2DCoords
         from rdkit.Chem.Draw import IPythonConsole
         from rdkit.Chem.Draw import MolToImage
         from rdkit.Chem.Draw import rdMolDraw2D
@@ -546,37 +614,23 @@ class Moiety:
         from IPython.display import SVG
         from rdkit.Chem import RWMol, MolFromSmiles, Atom, BondType, ChiralType
 
-        _ = MolFromSmiles('C')
-        rmol = RWMol(_)
+        if sketch and optimize:
+            raise ValueError('Impossible to use optmization in  2D sketch representation')
 
-        dict_old_new_idx = {}
-        n = 1
-        for  a in self.atoms:
-            old_idx = a.GetIdx()
-            rmol.AddAtom(a)
-            dict_old_new_idx[old_idx] = n 
-            n+=1
-        
-        for a in self.enviroments:
-            old_idx = a.GetIdx()
-            a.SetChiralTag(ChiralType.CHI_UNSPECIFIED)
-            a.SetIsAromatic(0)
-            rmol.AddAtom(a)
-            dict_old_new_idx[old_idx] = n 
-            n+=1
+        _m = deepcopy(self._mol)
 
-        for b in self.Bonds:
-             rmol.AddBond(dict_old_new_idx[b.GetBeginAtomIdx()], dict_old_new_idx[b.GetEndAtomIdx()], b.GetBondType())
-        for b in self.bondsenvironments:
-            rmol.AddBond(dict_old_new_idx[b.GetBeginAtomIdx()], dict_old_new_idx[b.GetEndAtomIdx()], b.GetBondType())
-        
-        rmol.RemoveAtom(0)
+        if sketch:
+            Compute2DCoords(_m)
 
-        rmol.UpdatePropertyCache(strict=False)
-        EmbedMolecule(rmol)
         drawer = rdMolDraw2D.MolDraw2DSVG(400, 200)
-        
-        drawer.DrawMolecule(rmol)
+        opts = drawer.drawOptions()
+
+
+        #rmol.UpdatePropertyCache(strict=False)
+        if optimize:
+            EmbedMolecule(_m)
+
+        drawer.DrawMolecule(_m)
         
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
