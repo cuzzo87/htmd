@@ -261,13 +261,20 @@ class SmallMol:
         elements = self.get_elements()
         mol = Molecule()
         mol.empty(self.get_natoms())
-        mol.resname[:] = self.get_name()[:3]
+        try:
+            mol.resname[:] = self.get_name()[:3]
+        except:
+            mol.resname[:] = 'UNK'
+
         mol.resid[:] = 1
         mol.name[:] = elements
         mol.element[:] = elements
         mol.charge[:] = self.get_charges()
         mol.coords[:, :, 0] = coords
-        mol.viewname = self.get_name()
+        try:
+            mol.viewname = self.get_name()
+        except:
+            mol.viewname = 'UNK'
         mol.bonds, mol.bondtype = self.get_bonds()
         return mol
 

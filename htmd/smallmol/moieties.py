@@ -1,6 +1,10 @@
 from rdkit import Chem
 from htmd.smallmol.smallmol import SmallMol
 from copy import deepcopy
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 AROMATIC = Chem.rdchem.BondType.AROMATIC
 SINGLE = Chem.rdchem.BondType.SINGLE
@@ -249,11 +253,9 @@ class MoietyFragmenter:
         return False
 
     def depictFGs(self, fgs=None, sketch=False, filename=None, ipython=False, optimize=False, atomlabels=False):
-        from rdkit.Chem.Draw import IPythonConsole
-        from rdkit.Chem.Draw import MolToImage
+
         from rdkit.Chem.Draw import rdMolDraw2D
         from IPython.display import SVG
-        from rdkit.Chem import MolToSmiles, MolFromSmiles
         from rdkit.Chem.AllChem import EmbedMolecule, Compute2DCoords
 
         if sketch and optimize:
@@ -303,7 +305,7 @@ class Moiety:
     _bondtypes = [AROMATIC, SINGLE, DOUBLE, TRIPLE]
     _colors = [(1,0,0), (0,1,0), (0, 0,1), (1,1,0), (1,0,1), (0,1,1)]
 
-    _smile_name = {'CC(=O)N':'amide', 'CN':'amine', 'CS':'thiol', 'CO':'alcohol', 'C1NC1':'aziridine',
+    _smile_name = {'C(=O)N':'amide', 'CN':'amine', 'CS':'thiol', 'CO':'alcohol', 'C1NC1':'aziridine',
                    'CC(OC)(O)':'hemiacetal', 'CC(OC)(OC)':'acetal', 'CC(C)(OC)(OC)':'ketal', 'CC(C)(OC)(O)':'hemiketal',
                    'C=C':'alkene', 'C#C':'alkine', 'CC(=O)C':'ketone', 'CC=N':'aldimine', 'CC(C)=N':'ketimine', 'CC(C)=N':'ketimine',
                    'CC(=O)':'aldehyde', 'CC(=O)Cl':'acylhalide', 'CC(=O)Br':'acylhalide', 'CC(=O)F':'acylhalide',
@@ -321,7 +323,7 @@ class Moiety:
                     'nitrite':1, 'nitroso':1, 'aldoxime':2, 'ketoxime':3, 'thiol':0, 'thioether':1, 'disulfide':1,
                     'sulfoxide':2, 'sulfone':3, 'sulfunilic_acid':2, 'solfonic_acid':3, 'thiocyanate':2,
                     'isothiocyanate':1, 'thial':0, 'thioketone':1, 'thioester':2, 'sulfonamide':1, 'guanidinium':1,
-                    'hydroxamic_acid':3, 'amidine':2, 'aziridine':1}
+                    'hydroxamic_acid':3, 'amidine':2, 'aziridine':1, 'ketone':2, 'alkene':0}
     
     def __init__(self, atoms):
         
@@ -330,6 +332,7 @@ class Moiety:
         self.bonds = self._getBonds(atoms)
         self.enviroments = []
         self._mol = None
+        self.Idx_lig_moi = {}
 
         self.bondsenvironments = []
 
@@ -428,11 +431,15 @@ class Moiety:
     def _getFgType(self):
         from rdkit.Chem import MolFromSmiles
         fgtype = []
+        print(">> ", self._mol.GetNumAtoms())
+        print(Chem.MolToSmiles(self._mol))
         for smi in self._smile_name.keys():
             m_ref = MolFromSmiles(smi)
             #print(smi, self._mol.HasSubstructMatch(m_ref))
             if self._mol.HasSubstructMatch(m_ref):
                 fgtype.append(self._smile_name[smi])
+        # print(self.AtomsIdx)
+        # print([b.GetBondType() for b in self.Bonds])
         print(fgtype)
         if len(fgtype) == 0:
             fgtype = None
@@ -451,20 +458,30 @@ class Moiety:
         from collections import Counter
 
         order = None
-        if fgtype in ['amide', 'aziridine', 'sulfonamide', 'amidine', 'amine', 'aldimine', 'ketimine', 'azide']:
+        if fgtype in ['amide', 'aziridine', 'sulfonamide',  'amine', 'aldimine', 'ketimine', 'azide']:
             Natom = [a for a in self.Atoms if a.GetSymbol() == 'N']
             Natom = [n for n in Natom if n.GetDegree() >= 3]
             if len(Natom) == 0:
-                raise ValueError("DEBUG. No nitrogen in functional group. Probably wrong assignement") 
+                logger.warning("DEBUG. No nitrogen in functional group. Probably wrong assignement")
+                return None
+                #raise ValueError("DEBUG. No nitrogen in functional group. Probably wrong assignement")
             Natom = Natom[0]
             order = sum([ 1 for a in Natom.GetNeighbors() if a.GetSymbol() != 'H' and a.GetSymbol() != 'N'])
+            if order == 1:
+                Catom = [ a for a in Natom.GetNeighbors() if a.GetSymbol() != 'H' and a.GetSymbol() != 'N'][0]
+                if Catom.GetIsAromatic(): return 'aromatic'
+
 
         # 2 env atoms Oxygen based
-        if fgtype in ['hemiacetal', 'acetal', 'hemiketal', 'ketal']:
+        if fgtype in ['hemiacetal', 'acetal', 'hemiketal', 'ketal', 'amidine']:
             Oatoms = [a for a in self.Atoms if a.GetSymbol() == 'O']
-            if len(Oatoms) == 0:
-                raise ValueError("DEBUG. No oxygen in functional group. Probably wrong assignement") 
-            carbons_idxs = [atom_other.GetIdx()  for Oatom in Oatoms for atom_other in Oatom.GetNeighbors() if atom_other.GetSymbol() == 'C' ]
+            Natoms = [a for a in self.Atoms if a.GetSymbol() == 'N']
+            if len(Oatoms) == 0 and len(Natoms) == 0:
+                raise ValueError("DEBUG. No oxygen or nitrogen  in functional group. Probably wrong assignement")
+
+            pointers = Oatoms if len(Oatoms) > len(Natoms) else Natoms
+
+            carbons_idxs = [atom_other.GetIdx() for PointerAtom in pointers for atom_other in PointerAtom.GetNeighbors() if atom_other.GetSymbol() == 'C' ]
             
             carbons_count = Counter(carbons_idxs)
             idx_carbon = list( carbons_count.values()).index( max(carbons_count.values()) ) 
@@ -495,21 +512,34 @@ class Moiety:
         atoms_ids = self.AtomsIdx
 
         other_atoms_del = []
+        # print('\n\nfg atoms: ', atoms_ids)
+        # print("envs: ", envAtoms_ids)
 
         for env_atomId in envAtoms_ids:
             env_atom = mol.GetAtomWithIdx(env_atomId)
             atoms_bonded = [ b.GetOtherAtomIdx(env_atomId) for b in env_atom.GetBonds() ]
             atoms_bonded_elements = [ mol.GetAtomWithIdx(a).GetSymbol() for a in atoms_bonded ]
-            start_atoms_del = [ aId for aId, aEl in zip(atoms_bonded, atoms_bonded_elements) if aId not in atoms_ids and aEl != 'H' ] 
+            start_atoms_del = [ aId for aId, aEl in zip(atoms_bonded, atoms_bonded_elements) if aId not in atoms_ids and aEl != 'H' ]
+            # test
+            # print("starts atoms to del: ", start_atoms_del)
             for aId_del in start_atoms_del:
                 other_atoms_del.extend(self._findAtomToDel(mol, aId_del, env_atomId))
-
+            # print("Check_round: ", env_atomId, other_atoms_del)
         other_atoms_del = list(set(other_atoms_del))
+        for aid in atoms_ids:
+            if aid in other_atoms_del:
+                other_atoms_del.remove(aid)
+        #print("atoms 2 delete ", other_atoms_del)
         new_mol = self.trim_atoms(mol, envAtoms_ids, other_atoms_del)
 
         return new_mol
 
     def trim_atoms(self,  mol, atomIds, atomIds_delete):
+        aas = [ a.GetIdx() for a in mol.GetAtoms() ]
+        aas_kept = list(set(aas) - set(atomIds_delete))
+        #print("original", ["{}{}".format(a.GetSymbol(), a.GetIdx()) for a in mol.GetAtoms()])
+        #print("on delete ", atomIds_delete)
+        #print('kept: ', aas_kept)
         rwmol = Chem.RWMol(mol)
         for atomId in atomIds:
             atom = rwmol.GetAtomWithIdx(atomId)
@@ -518,10 +548,15 @@ class Moiety:
             atom.SetFormalCharge(0)
             atom.SetIsAromatic(False)
             atom.SetNumExplicitHs(0)
-        
+        idx_shift = [ sum([ 1for dId in atomIds_delete if aId > dId]) for aId in aas_kept  ]
+
+        self.Idx_lig_moi = { aId - sId :aId for aId, sId in zip(aas_kept, idx_shift) }
+
+
         for aId in sorted(atomIds_delete, reverse=True):
-            rwmol.RemoveAtom(aId)
-            
+            if aId not in atomIds:
+                rwmol.RemoveAtom(aId)
+
         return rwmol.GetMol()
 
     def _get_atoms_to_visit(self, atom, seen_ids):
