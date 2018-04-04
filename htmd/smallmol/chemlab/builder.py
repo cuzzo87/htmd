@@ -33,11 +33,12 @@ class Builder:
 
     def __init__(self, smallmol=None, checkInitialConformer=True):
 
-        self.smallmol = smallmol
+        self.smallmol = smallmol.copy() if smallmol is not None else smallmol
         self.periodictable = PeriodicTable()
 
         if checkInitialConformer and smallmol is not None:
-            self._prepareConformer()
+            if not self._checkValidConformer():
+                self._prepareConformer()
 
 
     def loadMol(self, smallmol, checkInitialConformer=True):
@@ -59,7 +60,18 @@ class Builder:
         self.smallmol = smallmol.copy()
 
         if checkInitialConformer:
-            self._prepareConformer()
+            if not self._checkValidConformer():
+                self._prepareConformer()
+
+    def _checkValidConformer(self):
+        """
+        Checks if exists at least a valid conformer.
+        """
+        _smallmol = self.smallmol
+        coords_sum = np.sum(_smallmol.coords)
+        if coords_sum == 0:
+            return False
+        return True
 
     def _prepareConformer(self):
         """
@@ -101,8 +113,10 @@ class Builder:
 
         atomidxs = sm.get( 'idx', 'element {}'.format(heavy_sel))
         formalcharges = sm.get('formalcharge', 'element {}'.format(heavy_sel))
+        numexpliciths = sm.get('_numexpliciths', 'element {}'.format(heavy_sel))
 
-        missing_atoms = np.array([pT.getMissingValence(aId, sm, fch) for aId, fch in zip(atomidxs, formalcharges)])
+        missing_atoms = np.array([pT.getMissingValence(aId, sm, fch, nHs) for aId, fch, nHs in zip(atomidxs, formalcharges, numexpliciths)])
+        print('Total of missing hydrogen to add: ', sum(missing_atoms))
         ids = np.where(missing_atoms > 0)
         heavyToFill = atomidxs[ids]
         numHydrogens = missing_atoms[ids]
@@ -115,7 +129,6 @@ class Builder:
                 h_atoms.append(new_atom)
 
         self._addAtoms(h_atoms)
-
 
     def removeHydrogens(self, removePolars=True, removeNonPolars=True):
         """
@@ -191,6 +204,7 @@ class Builder:
             #TODO based on chiral
             sm.__dict__['_chiraltags'] = np.append(sm._chiraltags, 0)
             # Development note: removed assignement explicitHs
+            sm.__dict__['_numexpliciths'] = np.append(sm._numexpliciths, 0)
 
             # coords
             sm.__dict__['coords'][n_atom]  = self._getAtomCoords(n_atom, a['attachTo'])
@@ -304,7 +318,14 @@ class Builder:
             nbr2Vect = _normalizeVector(nbr2Vect)
             nbr3Vect = _normalizeVector(nbr3Vect)
 
-            dirVect = nbr1Vect + nbr2Vect + nbr3Vect
+            # if the three other atom are quasi planar we get the perpendicular of two of them
+            isplanar = True if abs(np.dot( nbr3Vect, np.cross(nbr1Vect, nbr2Vect) )) < 0.1 else False
+
+            if isplanar:
+                dirVect = np.cross(nbr1Vect, nbr2Vect)
+            else:
+                dirVect = nbr1Vect + nbr2Vect + nbr3Vect
+
             dirVect = _normalizeVector(dirVect)
 
         atom_coords = heavy_coords + dirVect * bondLength
@@ -346,12 +367,15 @@ class Builder:
 
         sm = self.smallmol
 
+        self._fixKekulizeProblem(sm, ids)
+
         for k in sm._atom_fields:
 
             if k == 'coords':
                 sm.__dict__[k] = np.delete(sm.__dict__[k], ids, axis=0)
             else:
                 sm.__dict__[k] = np.delete(sm.__dict__[k], ids)
+
 
         new_neighbors = []
         new_bondstype = []
@@ -393,6 +417,26 @@ class Builder:
         for n_set in sm.neighbors:
             for i, n in enumerate(n_set):
                 n_set[i] = atom_mapper[n]
+
+    def _fixKekulizeProblem(self, smallmol, ids):
+        """
+        Fixes the problems with the aromatic N and P. The numexpliciths is increased of 1 for each atom removed
+
+        Parameters
+        ----------
+        smallmol: htmd.smallmol.smallmol.SmallMol
+            The smallmol object
+        ids: list
+            The indexes of the atom to remove
+
+        """
+
+        #TODO include P for the same behaviour
+        nitrogens = [[a for a in smallmol.neighbors[i] if smallmol.element[a] == 'N' and a not in ids]
+                                  for i in ids]
+        nitrogens = np.concatenate([ns for ns in nitrogens if len(ns) != 0 ])
+        aromatic_nitrogens = np.array([n for n in nitrogens if smallmol.foundBondBetween('idx {}'.format(n), 'element C N', bondtype=12 )])
+        smallmol._numexpliciths[aromatic_nitrogens] += 1
 
     def getSmallMol(self):
         """
