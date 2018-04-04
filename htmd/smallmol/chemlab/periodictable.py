@@ -97,7 +97,7 @@ class PeriodicTable:
         return bradius
 
 
-    def getMissingValence(self, atomidx, smallmol, formalcharge=0):
+    def getMissingValence(self, atomidx, smallmol, formalcharge=0, numexplicitHs=0):
         """
         Returns the number of missing atom to complete the atom valence based on the types of bonds and formalcharge
 
@@ -110,6 +110,8 @@ class PeriodicTable:
         formalcharge: int
             The formalcharge of the atom
             Default: 0
+        numexplicitHs: int
+            The number of explicit hydrogens. This option is necessary for dealing with aromatic P,N
 
         Returns
         -------
@@ -126,18 +128,14 @@ class PeriodicTable:
 
         valences = list(pT.GetValenceList(element))
 
-        # Some atoms can have multiple valid valences (like S, P). For them I should predict the most reliable one.
-        # At the moment not implemented. I will raise an error now.
-        if len(valences) == 1:
-            valence = valences[0]
-        else:
-            class Notmplemented(Exception):
-                pass
-            raise Notmplemented('The missing valence is not implemented for atom with more than one valid valence')
+        #TODO add phosphorus
+        if element == 'N':
+            valences.extend([4])
 
-        missingatoms = self._evaluateMissingAtoms(valence,  btypes)
+        missingatoms =  min([ abs(self._evaluateMissingAtoms(valence,  btypes)) for valence in valences ])
+        #print(atomidx, element, valences, btypes, missingatoms)
 
-        missingatoms = missingatoms + formalcharge
+        missingatoms = missingatoms + formalcharge + numexplicitHs
 
         return missingatoms
 

@@ -19,7 +19,7 @@ class SmallMol:
     SmallMol extract all the molecule and atoms data from an rdkit.Chem.Molecule into the fields of this object.
     The fields can be access directly as attributes.
     Atom fields: 'idx', 'atomname', 'charge','formalcharge', 'element',  'chiral', 'hybridization',
-                 'neighbors', 'bondtypes', 'coords', '_chiraltags'
+                 'neighbors', 'bondtypes', 'coords', '_chiraltags', '_numexpliciths'
     Molecule fields: 'ligname', 'totalcharge', '_mol'
 
     mol, ignore_errors=False, force_reading=False, fixHs=True, removeHs=False
@@ -74,12 +74,11 @@ class SmallMol:
     """
 
     _atom_fields = ['idx', 'atomname', 'charge','formalcharge', 'element',  'chiral', 'hybridization',
-                    'neighbors', 'bondtypes', 'coords', '_chiraltags']
+                    'neighbors', 'bondtypes', 'coords', '_chiraltags', '_numexpliciths']
 
     _mol_fields = ['ligname', 'totalcharge', '_mol']
 
     ### Field types
-    ## Development Note:  'expliciths' removed.
     _atom_dtypes = {'idx': np.int,
                     'atomname': object,
                     'charge': np.float32,
@@ -90,7 +89,9 @@ class SmallMol:
                     'neighbors': object,
                     'bondtypes': int,
                     'coords': np.float32,
-                    '_chiraltags': object
+                    '_chiraltags': object,
+                    '_numexpliciths': int
+
                     }
 
     _mol_dtypes = {'_mol': object,
@@ -99,7 +100,6 @@ class SmallMol:
                    }
 
     ### Field shapes
-    ## Development Note:  'expliciths' removed.
     _atom_dims = {'idx': (0,),
                   'atomname': (0,),
                   'charge': (0,),
@@ -110,7 +110,8 @@ class SmallMol:
                   'bondtypes': (0,),
                   'hybridization': (0,),
                   'coords': (0, 3, 1),
-                  '_chiraltags':(0,)
+                  '_chiraltags':(0,),
+                  '_numexpliciths':(0,)
                     }
 
     _mol_dims = {'_mol': (0,),
@@ -266,7 +267,6 @@ class SmallMol:
              If is not None the parameters are taken from this object
         """
         # the fields
-        # Development note explicitHs removed
         idxs = []
         atomnames = []
         charges = []
@@ -277,6 +277,7 @@ class SmallMol:
         neighbors = []
         bondtypes = []
         chiraltags = []
+        numexpliciths = []
 
         _mol = self._mol
 
@@ -285,10 +286,11 @@ class SmallMol:
                 self.__dict__[f] = v
             return
 
-        # Development note explicitHs removed
         for a in _mol.GetAtoms():
             i = a.GetIdx()
             e = a.GetSymbol()
+            nHs = a.GetNumExplicitHs()
+            numexpliciths.append(nHs)
             chiraltags.append(a.GetChiralTag())
             idxs.append(i)
             atomnames.append('{}{}'.format(e,i))
@@ -314,7 +316,6 @@ class SmallMol:
         for k, v in _mol.GetPropsAsDict().items():
             self.setProp(k,v, overwrite=True)
 
-        # Development note explicitHs removed
         self.__dict__['totalcharge'] = sum(formalcharges)
         self.__dict__['idx'] = np.array(idxs)
         self.__dict__['atomname'] = np.array(atomnames)
@@ -326,6 +327,7 @@ class SmallMol:
         self.__dict__['neighbors'] = np.array(neighbors)
         self.__dict__['bondtypes'] = np.array(bondtypes)
         self.__dict__['_chiraltags'] = np.array(chiraltags)
+        self.__dict__['_numexpliciths'] = np.array(numexpliciths)
 
         if _mol.GetNumConformers() != 0:
             coords = _mol.GetConformer(0).GetPositions()
@@ -1026,11 +1028,14 @@ class SmallMol:
 
         rw = RWMol()
 
-        # Development note: removed explicitHs
         for n in range(self.numAtoms):
             a = Atom(self.element[n])
             a.SetFormalCharge(int(self.formalcharge[n]))
-            a.SetNoImplicit(1)
+            if self._numexpliciths[n] == 1:
+                a.SetNoImplicit(0)
+                a.SetNumExplicitHs(int(self._numexpliciths[n]))
+            else:
+                a.SetNoImplicit(1)
             if self.chiral[n] != '':
                 a.SetProp('_CIPCode', self.chiral[n])
             chiral_type = _chiral_type_Dict[self._chiraltags[n]]
