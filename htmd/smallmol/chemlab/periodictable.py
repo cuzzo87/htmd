@@ -52,7 +52,7 @@ class PeriodicTable:
     def __init__(self):
         self.PeriodicaTable = GetPeriodicTable()
 
-    def _evaluateMissingAtoms(self, valence, btypes):
+    def _evaluateMissingAtoms(self, valence, btypes, formalcharge):
         """
         Returns the difference bewtween the current valence computed and the expected one.
 
@@ -71,8 +71,8 @@ class PeriodicTable:
         """
         normbondvalence = sum([ 1.5 if int(b) == 12 else int(b) for b in btypes  ])
 
-        missatoms = int(valence - normbondvalence)
-
+        missatoms = int(valence + formalcharge - normbondvalence)
+        #print(missatoms)
         return missatoms
 
     def getRadiusBond(self, element):
@@ -128,15 +128,15 @@ class PeriodicTable:
 
         valences = list(pT.GetValenceList(element))
 
-        #TODO add phosphorus
-        if element == 'N':
-            valences.extend([4])
+        # #TODO add phosphorus?
+        if element == 'S':
+            valences.extend([3])
 
-        missingatoms =  min([ abs(self._evaluateMissingAtoms(valence,  btypes)) for valence in valences ])
+
+        missingatoms =  min([ abs(self._evaluateMissingAtoms(valence,  btypes, formalcharge)) for valence in valences ])
         #print(atomidx, element, valences, btypes, missingatoms)
 
-        missingatoms = missingatoms + formalcharge + numexplicitHs
-
+        missingatoms = missingatoms + numexplicitHs
         return missingatoms
 
 

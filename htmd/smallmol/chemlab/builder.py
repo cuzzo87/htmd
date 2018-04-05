@@ -434,9 +434,12 @@ class Builder:
         #TODO include P for the same behaviour
         nitrogens = [[a for a in smallmol.neighbors[i] if smallmol.element[a] == 'N' and a not in ids]
                                   for i in ids]
-        nitrogens = np.concatenate([ns for ns in nitrogens if len(ns) != 0 ])
-        aromatic_nitrogens = np.array([n for n in nitrogens if smallmol.foundBondBetween('idx {}'.format(n), 'element C N', bondtype=12 )])
-        smallmol._numexpliciths[aromatic_nitrogens] += 1
+        try:
+            nitrogens = np.concatenate([ns for ns in nitrogens if len(ns) != 0 ])
+            aromatic_nitrogens = np.array([n for n in nitrogens if smallmol.foundBondBetween('idx {}'.format(n), 'element C N', bondtype=12 )])
+            smallmol._numexpliciths[aromatic_nitrogens] += 1
+        except:
+            pass
 
     def getSmallMol(self):
         """
