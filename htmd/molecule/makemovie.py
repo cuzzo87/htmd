@@ -5,10 +5,13 @@ import numpy as np
 
 class Scene:
 
-    def __init__(self, reprs=None, rot_mat=None):
+    def __init__(self, reprs=None):
 
         self.representations = reprs
-        self.rotate_matrix = rot_mat
+        self.rotate_matrix = None
+        self.center_matrix = None
+        self.scale_matrix = None
+        self.global_matrix = None
 
 class MovieMaker:
 
@@ -44,11 +47,18 @@ class MovieMaker:
         mol = self.mol
 
         if isinstance(viewer, VMD):
-            rotate_matrix = self._getRotateMatrixVMD()
+            rotate_matrix = self._getMatrixVMD('rotate')
+            center_matrix = self._getMatrixVMD('center')
+            scale_matrix = self._getMatrixVMD('scale')
+            global_matrix = self._getMatrixVMD('global')
 
         #TODO ngl
 
-        scene = Scene(reprs=mol.reps, rot_mat=rotate_matrix)
+        scene = Scene(reprs=mol.reps)
+        scene.rotate_matrix = rotate_matrix
+        scene.center_matrix = center_matrix
+        scene.scale_matrix = scale_matrix
+        scene.global_matrix = global_matrix
 
         self.scenes.append(scene)
 
@@ -71,31 +81,29 @@ class MovieMaker:
         start_scene = self.scenes[startSceneId]
         start_rotMat = start_scene.rotate_matrix
 
+
+
+
         end_scene = self.scenes[endSceneId]
         end_rotMat = end_scene.rotate_matrix
 
-        s
 
-
-
-
-
-    def _getRotateMatrixVMD(self):
+    def _getMatrixVMD(self, matrixtype):
         viewer = self.viewer
         outputFile = NamedTemporaryFile(delete=False).name
 
-        print('save scene for vmd ')
-        viewer.send('set R [molinfo top get rotate_matrix]')
+        viewer.send('set R [molinfo top get {}_matrix]'.format(matrixtype))
 
 
         self._writeTclOutput('R', outputFile)
 
         f = open(outputFile, 'r')
-        txt_rotateMatrix = f.read().replace('{', '').replace('}', '')
-        rotateMatrix = np.array(txt_rotateMatrix.split(), dtype=float)
-        rotateMatrix = rotateMatrix.reshape(4,4)
+        txt_Matrix = f.read().replace('{', '').replace('}', '')
+        matrix = np.array(txt_Matrix.split(), dtype=float)
+        matrix = matrix.reshape(4,4)
 
-        return rotateMatrix
+        return matrix
+
 
     def _writeTclOutput(self, outputVariable, outputFile):
 
@@ -122,3 +130,45 @@ class MovieMaker:
         else:
             raise ValueError('Not a valid viewer.')
 
+
+
+
+def matrixToEuler(matrix):
+    from math import atan2, asin, cos, pi
+
+    m31 = matrix[2][0]
+    m12 = matrix[0][1]
+    m13 = matrix[0][2]
+    m32 = matrix[2][1]
+    m33 = matrix[2][2]
+    m21 = matrix[1][0]
+    m11 = matrix[0][0]
+
+    if m31 == 1:
+        phi = 0
+        psi = atan2(m12, m13)
+        theta = -pi/2
+    elif m31 == -1:
+        phi = 0
+        psi = atan2(m12, m13)
+        theta = pi /2
+
+    else:
+        theta = -asin(m31)
+        cosT = cos(theta)
+        psi = atan2(m32/cosT,  m33/cosT)
+        phi = atan2(m21/cosT, m11/cosT)
+
+    return np.array([theta, phi, psi])
+
+def _bestEuler(euler):
+    from math import pi
+
+    new_euler = []
+
+    for e in euler:
+        if e > pi:
+            new_euler.append(e-2*pi)
+        else:
+            new_euler.append(e + 2 * pi)
+    return np.array(new_euler)
