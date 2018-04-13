@@ -246,7 +246,7 @@ def quatarc(quat1, quat2, step):
 
     theta = acos(np.dot(quat1, quat2)/sqrt(np.dot(quat1, quat1) * np.dot(quat2, quat2)))
 
-    quat = np.add( sin(theta * 1-step)/sin(theta) * quat1, sin(theta * step)/sin(theta) * quat2 )
+    quat = np.add( sin(theta * (1-step))/sin(theta) * quat1, sin(theta * step)/sin(theta) * quat2 )
 
     return quat
 
@@ -266,11 +266,11 @@ def quaternionToMatrix(quat):
 def _bestEuler(diff_euler, euler):
     from math import pi
 
-    new_euler = []
+    new_euler = euler
 
     for i in range(diff_euler.shape[0]):
         if diff_euler[i] > pi:
-            new_euler.append(euler[i]-2*pi)
-        else:
-            new_euler.append(euler[i] + 2 * pi)
+            new_euler[i] = euler[i]-2*pi
+        elif diff_euler[i] < -pi:
+            new_euler[i] = euler[i] + 2 * pi
     return np.array(new_euler)
