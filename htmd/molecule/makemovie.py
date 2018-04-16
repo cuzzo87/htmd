@@ -162,10 +162,11 @@ class MovieMaker:
             scale_mat = scale_mat.replace('[', '{').replace(']', '}').replace(',', '')
             glob_mat = str(now_globmat.tolist())
             glob_mat = glob_mat.replace('[', '{').replace(']', '}').replace(',', '')
+            print(rot_mat)
             self.viewer.send('molinfo top set rotate_matrix {{{}}}'.format(rot_mat))
             #self.viewer.send('molinfo top set {{rotate_matrix center_matrix scale_matrix global_matrix}} '
             #               '{{{} {} {} {}}}'.format(rot_mat, center_mat, scale_mat, glob_mat))
-            time.sleep(0.2)
+           # time.sleep(0.2)
 
 
     def _matrixToVMD(self, scene, matrixtype):
@@ -267,59 +268,160 @@ def matrixToQuaternion(matrix):
     m32 = matrix[2][1]
 
     t44as33 = m11 + m22 + m33
+    t = t44as33
+    r, s, w, x, y, z = 0, 0, 0, 0, 0, 0
+
+    if t > 0:
+        S = sqrt(t+1) * 2
+
+        w = 0.25 * S
+        x = (m32 - m32) / S
+        y = (m13 - m31) / S
+        z = (m21 - m12) / S
+
+    elif m11 > m22 and m11 > m33:
+        S = sqrt(1 + m11 - m22 - m33) * 2
+
+        w = (m32 - m23) /S
+        x = 0.25 * S
+        y = (m12 + m21) /S
+        z = (m13 + m31) /S
+
+    elif m22 > m33:
+        S = sqrt(1 + m22 - m11 -m33) * 2
+
+        w = (m13 - m31) / S
+        x = (m12 + m21) / S
+        y = 0.25 * S
+        z = (m23 + m32) / S
+
+    else:
+        S = sqrt(1 + m33 - m11 -m22) * 2
+
+        w = (m21 - m12) / S
+        x = (m13 + m31) / S
+        y = (m23 + m32) / S
+        z = 0.25 * S
+
+    return np.array([w, x, y, z])
+
+def _matrixToQuaternion(matrix):
+    from math import sqrt
+
+    m11 = matrix[0][0]
+    m12 = matrix[0][1]
+    m13 = matrix[0][2]
+    m22 = matrix[1][1]
+    m21 = matrix[1][0]
+    m23 = matrix[1][2]
+    m33 = matrix[2][2]
+    m31 = matrix[2][0]
+    m32 = matrix[2][1]
+
+    t44as33 = m11 + m22 + m33
     r,s,w,x,y,z = 0,0,0,0,0,0
 
     if t44as33 > 0:
-        r = 1.0 + t44as33
+        r = t44as33 + 1
         s = 0.5 / sqrt(r)
         w = s * r
         x = (m23 - m32) * s
         y = (m31 - m13) * s
         z = (m12 - m21) * s
+        # w = (m23 - m32) * s
+        # x = (m31 - m13) * s
+        # y = (m12 - m21) * s
+        # z = s * r
 
     elif m11 > m22 and m11 > m33:
-        #r = 1.0 - t44as33 + 2 * m11
-        r = 1.0 +  m11 + -m22 -m33 #+  m11
+        r = 1.0 - t44as33 + 2 * m11
+        #r = m11  - m22 - m33 + 1
         s = 0.5 / sqrt(r)
-        w = s * r
-        x = (m12 + m21) * s
-        y = (m13 + m31) * s
-        z = (m23 - m32) * s
+        w = (m23 - m32) * s
+        x = s * r
+        y = (m12 + m21) * s
+        z = (m13 + m31) * s
+        # w = s * r
+        # x = (m12 + m21) * s
+        # y = (m13 + m31) * s
+        # z = (m23 - m32) * s
 
     elif m22 > m33:
-        #r = 1.0 - t44as33 + 2 * m22
-        r = 1.0 + -m11 + m22 -m33
+        r = 1.0 - t44as33 + 2 * m22
+        #r = 1 - m11 + m22 - m33
         s = 0.5 / sqrt(r)
-        w = s * r
+        w = (m31 - m13) * s
         x = (m12 + m21) * s
-        y = (m23 + m32) * s
-        z = (m31 - m13) * s
+        y = s * r
+        z = (m23 + m32) * s
+        # w = (m12 + m21) * s
+        # x = s * r
+        # y = (m23 + m32) * s
+        # z = (m31 - m13) * s
 
     else:
-        #r = 1.0 - t44as33  + 2 * m33
-        r = 1.0 + -m11 -m22 + m33
+        r = 1.0 - t44as33  + 2 * m33
+        #r = 1.0 - m11 - m22 + m33
         s = 0.5 / sqrt(r)
-        w = s * r
-        x = (m13 + m31) * s
+        w =  (m12 - m21) * s
+        x = (m31 + m13) * s
         y = (m23 + m32) * s
-        z = (m12 - m21) * s
+        z = s * r
+        # w = (m31 + m13) * s
+        # x = (m23 + m32) * s
+        # y = s * r
+        # z = (m12 - m21) * s
 
     return np.array([w,x,y,z])
 
 def quatarc(quat1, quat2, step):
-    from math import sqrt, acos, sin, degrees, atan, atan2
-    print(quat1, quat2)
-    qdot = np.dot(quat1, quat2)
-    print(qdot)
+    from math import acos, sqrt, sin
 
-    if qdot > 0.9999:
-        return quat2
-    elif qdot < 0:
-        quat1 = quat1 * -1
+    coshaltheta = quat1[0] * quat2[0] + quat1[1] * quat2[1] + quat1[2] * quat2[2] + quat1[3] * quat2[3]
+
+    if coshaltheta < 0:
+        quat2 = quat2 * [-1, -1, -1, 1]
+        coshaltheta = -coshaltheta
+
+    if abs(coshaltheta) >= 1:
+        quat = quat1
+        return quat
+
+    halftheta =  acos(coshaltheta)
+    sinhalftheta = sqrt(1- coshaltheta**2)
+
+    if abs(sinhalftheta) < 0.001:
+        quat = np.array([quat1[0] * 0.5 + quat2[0] * 0.5,
+                         quat1[1] * 0.5 + quat2[1] * 0.5,
+                         quat1[2] * 0.5 + quat2[2] * 0.5,
+                         quat1[3] * 0.5 + quat2[3] * 0.5])
+        return quat
+
+    ratio1 = sin(1-step) * halftheta / sinhalftheta
+    ratio2 = sin(step * halftheta) / sinhalftheta
+
+    quat = np.array([quat1[0] * ratio1 + quat1[0] * ratio2,
+                     quat1[1] * ratio1 + quat1[1] * ratio2,
+                     quat1[2] * ratio1 + quat1[2] * ratio2,
+                     quat1[3] * ratio1 + quat1[3] * ratio2])
+
+    return quat
+
+def _quatarc(quat1, quat2, step):
+    from math import sqrt, acos, sin, fabs, degrees, atan, atan2, cos
+    print(quat1, quat2)
+
+    # qdot = np.dot(quat1, quat2)
+    # print(qdot)
+    #
+    # if qdot > 0.9999:
+    #     return quat2
+    # elif qdot < 0:
+    #     quat1 = quat1 * -1
 
     #theta = acos(np.dot(quat1, quat2)/sqrt(np.dot(quat1, quat1) * np.dot(quat2, quat2)))
     #theta = acos(np.dot(quat1, quat2))
-    quat2Conj = _invQuaternion(quat2)
+    #quat2Conj = _invQuaternion(quat2)
    # print("shape: ", quat1.shape, quat2Conj.shape)
     #print(">>>>> ", np.cross(quat1, quat2Conj))
     # {\displaystyle
@@ -327,14 +429,78 @@ def quatarc(quat1, quat2, step):
     # k.} {} + (a_{1}d_{2}+b_{1}c_{2}-c_{1}b_{2}+d_{1}a_{2})
     # k.
 
+    #theta = atan2((quat1 * quat2Conj)[0])
+    #print("a: ", degrees(theta), step)
+#     cosHalfTheta = np.dot(quat1, quat2)
+#     if cosHalfTheta >= 1:
+#         return quat1
+#
+#     halfTheta =  acos(cosHalfTheta)
+#     sinHalfTheta = sqrt(1 - cosHalfTheta**2)
+#
+#     if fabs(sinHalfTheta) < 0.001:
+#         quat = np.zeros(4)
+#         quat[0] = quat1[0] * 0.5 + quat2[0] * 0.5
+#         quat[1] = quat1[1] * 0.5 + quat2[1] * 0.5
+#         quat[2] = quat1[2] * 0.5 + quat2[2] * 0.5
+#         quat[3] = quat1[3] * 0.5 + quat2[3] ^ 0.5
+#         return quat
+# #
+# # #    quat = np.add( sin(theta * (1-step))/sin(theta) * quat1, sin(theta * step)/sin(theta) * quat2 )
+# #     quat = np.add(sin(theta * (1 - step)) * quat1, sin(theta * step) * quat2)  / sin(theta)
+# #     print(quat)
+# #     print()
+#
+#     quat = np.zeros(4)
+#     ratioA = sin(1-step) * halfTheta / sinHalfTheta
+#     ratioB = sin(step * halfTheta) / sinHalfTheta
+#
+#     quat[0] = quat1[0] * ratioA + quat2[0] * ratioB
+#     quat[1] = quat1[1] * ratioA + quat2[1] * ratioB
+#     quat[2] = quat1[2] * ratioA + quat2[2] * ratioB
+#     quat[3] = quat1[3] * ratioA + quat2[3] * ratioB
+#
+#     dot = np.dot(quat1, quat2)
+#
+#     print(dot)
+#     if dot < 0:
+#         quat1 = -quat1
+#         dot = -dot
+#
+#     threshold = 0.9995
+#
+#     if dot > threshold:
+#         quat = quat1 + step * (quat2 - quat1)
+#
+#         return quat
+#
+#     if dot < -1:
+#         dot = -1
+#     elif dot > 1:
+#         dot = 1
+#     theta_0 = acos(dot)
+#     theta = theta_0 * step
+#
+#     s0 = cos(theta) - dot * sin(theta)/sin(theta_0)
+#     s1 = sin(theta) / sin(theta_0)
+#
+#     quat = s0 * quat1 + s1 * quat1
 
-    theta = atan2((quat1 * quat2Conj)[0])
-    print("a: ", degrees(theta), step)
+    qdot = np.dot(quat1, quat2)
 
-#    quat = np.add( sin(theta * (1-step))/sin(theta) * quat1, sin(theta * step)/sin(theta) * quat2 )
-    quat = np.add(sin(theta * (1 - step)) * quat1, sin(theta * step) * quat2)  / sin(theta)
-    print(quat)
-    print()
+    if qdot > 0.9999:
+        return quat2
+    elif qdot < 0:
+        quat1 = quat1 * -1
+
+    theta = acos( np.dot(quat1, quat2)/sqrt(np.dot(quat1, quat1) * np.dot(quat2, quat2) ) )
+    print(degrees(theta))
+
+    quat = np.add( quat1 * sin(theta * (1-step))/sin(theta), quat2 * sin(theta * step)/sin(theta) )
+
+
+
+
     return quat
 
 def quaternionToMatrix(quat):
