@@ -2,10 +2,13 @@ from htmd.vmdviewer import VMD, getCurrentViewer
 from nglview import NGLWidget,HTMDTrajectory
 from tempfile import NamedTemporaryFile
 import numpy as np
+import os
 
 class Scene:
 
-    def __init__(self, reprs=None):
+    def __init__(self, id=None, reprs=None):
+
+        self.id = id
 
         # vmd
         self.representations = reprs
@@ -16,18 +19,24 @@ class Scene:
 
         # ngl
         self.orientation_matrix = None
+        self.orientation_delta = None
 
 class Transaction:
 
-    def __init__(self, begScene, endScene):
+    def __init__(self, begScene, endScene, scenes=None):
+
         self.begScene = begScene
         self.endScene = endScene
+        self.begId = self.begScene.id
+        self.endId = self.endScene.id
 
-        self.scenes = []
+        # vmd
+        self.scenes = [] if scenes == None else scenes
 
-    def appendScene(self, scene):
+        # ngl -->  nglview does not allow to decompose the orientation matrix. Thus we have to store the delta matrix
+        #          to apply.
 
-        self.scenes.append(scene)
+
 
 class MovieMaker:
 
@@ -41,6 +50,7 @@ class MovieMaker:
         self.scenes = []
         self.animations = []
 
+        self.timeline = []
 
         self._initStage()
 
@@ -62,12 +72,12 @@ class MovieMaker:
             viewer.add_trajectory(traj)
             mol.reps._repsNGL(viewer)
 
-    def _getScene(self, repr='current'):
+    def _getScene(self, id=None, repr='current'):
         # repr current, previous
         viewer = self.viewer
         mol = self.mol
 
-        scene = Scene(reprs=mol.reps)
+        scene = Scene(id=id, reprs=mol.reps)
 
         if isinstance(viewer, VMD):
             rotate_matrix = self._matrixFromVMD('rotate')
@@ -87,15 +97,20 @@ class MovieMaker:
         return scene
 
     def saveScene(self):
-        scene = self._getScene()
+        _id = len(self.scenes)
+
+        scene = self._getScene(id=_id)
 
         self.scenes.append(scene)
 
-    def retrieveScene(self, sceneid):
-        try:
-            scene = self.scenes[sceneid]
-        except:
-            raise IndexError('The scene with that sceneId does not exists')
+    def retrieveScene(self, scene):
+        if isinstance(scene, Scene):
+            scene = scene
+
+        else:
+            if scene >= len(self.scenes):
+                raise IndexError('The scene with that sceneId does not exists')
+            scene = self.scenes[scene]
 
         viewer = self.viewer
 
@@ -132,17 +147,101 @@ class MovieMaker:
         cmd = getattr(_class, method)
         cmd(args)
 
+    def record(self, moviename='mymovie', outdir="imagesVideo", overwrite=False, fps=None, spf=None):
+        viewer = self.viewer
+        mol = self.mol
 
-    def createAnimation(self, startSceneId, endSceneId):
+        if os.path.isdir(outdir):
+            if not overwrite:
+                raise IsADirectoryError('The directory exists, change the name or set as True the overwrite argument')
+            else:
+                os.rmdir(outdir)
+        os.mkdir(outdir)
 
-        start_scene = self.scenes[startSceneId]
-        start_rotMat = start_scene.rotate_matrix
 
-        end_scene = self.scenes[endSceneId]
-        end_rotMat = end_scene.rotate_matrix
+        if isinstance(viewer, VMD):
+            self._recordVMD(viewer, mol, outdir)
+
+        elif isinstance(viewer, NGLWidget):
+            pass
+
+    def _recordVMD(self, viewer, mol, outdir):
+
+        preload_tcl = """global env
+set Arch [vmdinfo arch]
+set vmdEnv $env(VMDDIR)
+set molID [molinfo top]
+set tach "$vmdEnv/tachyon_$Arch"
+
+"""
+        viewer.send(preload_tcl)
+        frames = mol.numFrames
+
+        for nf in range(frames):
+            nframe = "%06d" % nf
+            tcl = """animate goto {}
+display update ui
+set filename {}/image.{}.tga
+render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
+""".format(nf, outdir, nframe)
+            viewer.send(tcl)
+            if nf == 3:
+                break
+
+
+    def play(self):
+        from time import sleep
+
+        viewer = self.viewer
+
+        if isinstance(viewer, NGLWidget):
+            print('Not stable. At the moment it does not work')
+            return
+
+        for element in self.timeline:
+            if isinstance(element, Scene):
+                scene = element
+                self.retrieveScene(scene)
+
+            if isinstance(element, Transaction):
+                transaction = element
+                for scene in transaction.scenes:
+                    #TODO  temporary approach until nglview allows to decompose the orientation matrix
+                    if isinstance(viewer, NGLWidget):
+                        _class = viewer.control
+                        method = 'apply_matrix'
+                        mat = scene.orientation_delta
+                        args = np.concatenate(mat).tolist()
+                        self._updateView(_class, method, args)
+                        viewer.sync_view()
+                    else:
+                        self.retrieveScene(scene)
+
+    def autoTimeline(self):
+        tmp_timeline = []
+
+        transaction_skipped = []
+
+        for i in range(len(self.scenes)):
+            scene = self.scenes[i]
+            tmp_timeline.append(scene)
+
+            for t in self.animations:
+                if t.begId == i  and t not in tmp_timeline:
+                    if t.endId == i + 1:
+                        tmp_timeline.append(t)
+                    else:
+                        transaction_skipped.append(t)
+
+        self.timeline = tmp_timeline
+        if len(transaction_skipped) != 0:
+            print("Some transactions were not possible to place in timeline ( n transaction skipped: {}) ".format(len(transaction_skipped)))
+
+
+
 
     def transaction(self, begSceneId, endSceneId, numsteps=50):
-        self.retrieveScene(begSceneId)
+        #self.retrieveScene(begSceneId)
 
         begScene = self.scenes[begSceneId]
         endScene = self.scenes[endSceneId]
@@ -152,7 +251,31 @@ class MovieMaker:
         if isinstance(viewer, VMD):
             listScenes = self._transactionVMD(begScene, endScene, numsteps)
         elif isinstance(viewer, NGLWidget):
-            pass
+            listScenes = self._transactionNGL(begScene, endScene, numsteps)
+
+        T = Transaction(begScene, endScene, listScenes)
+        self.animations.append(T)
+
+    def _transactionNGL(self, begScene, endScene, numsteps):
+
+        current_orientation = begScene.orientation_matrix
+
+        beg_orientationQuat = _normalizeQuat(matrixToQuaternion(begScene.orientation_matrix))
+        end_orientationQuat = _normalizeQuat(matrixToQuaternion(endScene.orientation_matrix))
+
+        stepsize = 1 / numsteps
+        current_deltaQuat = quatarc(beg_orientationQuat, end_orientationQuat, stepsize)
+
+        current_deltaMatrix = quaternionToMatrix(current_deltaQuat)
+
+        list_scenes = []
+        for i in range(numsteps+1):
+            sc = Scene()
+            sc.orientation_delta = current_deltaMatrix
+
+            list_scenes.append(sc)
+
+        return list_scenes
 
     def _transactionVMD(self, begScene, endScene, numsteps):
 
@@ -170,78 +293,24 @@ class MovieMaker:
 
         stepsize = 1 / numsteps
 
+        list_scenes = []
         for i in range(1, numsteps+1):
             stepratio = stepsize * i
             qarc = quatarc(beg_rotateQuat, end_rotateQuat, stepratio)
-            
+            current_rotateMatrix = quaternionToMatrix(qarc)
+            current_centerMatrix = np.add(current_centerMatrix, diff_center * stepsize)
+            current_scaleMatrix = np.add(current_scaleMatrix, diff_scale * stepsize)
+            current_globalMatrix = np.add(current_globalMatrix, diff_global * stepsize)
 
-    def test(self):
-        beg_scene = self.scenes[startSceneId]
-        end_scene = self.scenes[endSceneId]
+            sc = Scene()
+            sc.rotate_matrix = current_rotateMatrix
+            sc.center_matrix = current_centerMatrix
+            sc.scale_matrix = current_scaleMatrix
+            sc.global_matrix = current_globalMatrix
 
-        beg_eul = matrixToEuler(beg_scene.rotate_matrix)
-        end_eul = matrixToEuler(end_scene.rotate_matrix)
+            list_scenes.append(sc)
+        return list_scenes
 
-        diff_eul = end_eul - beg_eul
-
-        end_eul = _bestEuler(diff_eul, end_eul)
-
-        diff_eul = end_eul - beg_eul
-
-        diff_center = end_scene.center_matrix - beg_scene.center_matrix
-        diff_scale = end_scene.scale_matrix - beg_scene.scale_matrix
-        diff_global = end_scene.global_matrix - beg_scene.global_matrix
-
-        _diffScene =  Scene()
-        _diffScene.rotate_matrix = diff_eul
-        _diffScene.center_matrix = diff_center
-        _diffScene.scale_matrix = diff_scale
-        _diffScene.global_matrix = diff_global
-
-        beg_rotmat_quat = matrixToQuaternion(beg_scene.rotate_matrix)
-        end_rotmat_quat = matrixToQuaternion(end_scene.rotate_matrix)
-
-        beg_centmat_quat = matrixToQuaternion(beg_scene.center_matrix)
-        end_centmat_quat = matrixToQuaternion(end_scene.center_matrix)
-
-        beg_scalemat_quat = matrixToQuaternion(beg_scene.scale_matrix)
-        end_scalemat_quat = matrixToQuaternion(end_scene.scale_matrix)
-
-        beg_globalmat_quat = matrixToQuaternion(beg_scene.global_matrix)
-        end_globalmat_quat = matrixToQuaternion(end_scene.global_matrix)
-
-        self.saveScene()
-        now_scene = self.scenes[-1]
-
-        now_centmat = now_scene.center_matrix
-        now_scalemat = now_scene.scale_matrix
-        now_globmat = now_scene.global_matrix
-        import time
-        for i in range(50):
-            #print(i)
-            step = (i+1)/50
-            stepsize =  1 /50
-            qarc = quatarc(beg_rotmat_quat, end_rotmat_quat, step)
-            now_rotmat = quaternionToMatrix(qarc)
-            #now_centmat = quaternionToMatrix(quatarc(beg_centmat_quat, end_centmat_quat, step))
-            #now_scalemat = quaternionToMatrix(quatarc(beg_scalemat_quat, end_scalemat_quat, step))
-            #now_globmat = quaternionToMatrix(quatarc(beg_globalmat_quat, end_globalmat_quat, step))
-            now_centmat = np.add(now_centmat, _diffScene.center_matrix * stepsize)
-            now_scalemat = np.add(now_scalemat, _diffScene.scale_matrix * stepsize)
-            now_globmat = np.add(now_globmat, _diffScene.global_matrix * stepsize)
-            rot_mat = str(now_rotmat.tolist())
-            rot_mat = rot_mat.replace('[', '{').replace(']', '}').replace(',', '')
-            center_mat = str(now_centmat.tolist())
-            center_mat = center_mat.replace('[', '{').replace(']', '}').replace(',', '')
-            scale_mat = str(now_scalemat.tolist())
-            scale_mat = scale_mat.replace('[', '{').replace(']', '}').replace(',', '')
-            glob_mat = str(now_globmat.tolist())
-            glob_mat = glob_mat.replace('[', '{').replace(']', '}').replace(',', '')
-            #print(rot_mat)
-            #self.viewer.send('molinfo top set rotate_matrix {{{}}}'.format(rot_mat))
-            self.viewer.send('molinfo top set {{rotate_matrix center_matrix scale_matrix global_matrix}} '
-                           '{{{} {} {} {}}}'.format(rot_mat, center_mat, scale_mat, glob_mat))
-           # time.sleep(0.2)
 
     def _matrixToVMD(self, scene, matrixtype):
 
@@ -300,7 +369,6 @@ class MovieMaker:
             return viewer
 
         elif isinstance(viewer, NGLWidget):
-            print('found NGL')
             return viewer
 
         elif viewer == None:
@@ -495,82 +563,6 @@ def _quatarc(quat1, quat2, step):
 
 def quatarc(quat1, quat2, step):
     from math import sqrt, acos, sin, fabs, degrees, atan, atan2, cos
-#    print(quat1, quat2)
-
-    # qdot = np.dot(quat1, quat2)
-    # print(qdot)
-    #
-    # if qdot > 0.9999:
-    #     return quat2
-    # elif qdot < 0:
-    #     quat1 = quat1 * -1
-
-    #theta = acos(np.dot(quat1, quat2)/sqrt(np.dot(quat1, quat1) * np.dot(quat2, quat2)))
-    #theta = acos(np.dot(quat1, quat2))
-    #quat2Conj = _invQuaternion(quat2)
-   # print("shape: ", quat1.shape, quat2Conj.shape)
-    #print(">>>>> ", np.cross(quat1, quat2Conj))
-    # {\displaystyle
-    # {} + (a_{1}d_{2}+b_{1}c_{2}-c_{1}b_{2}+d_{1}a_{2})
-    # k.} {} + (a_{1}d_{2}+b_{1}c_{2}-c_{1}b_{2}+d_{1}a_{2})
-    # k.
-
-    #theta = atan2((quat1 * quat2Conj)[0])
-    #print("a: ", degrees(theta), step)
-#     cosHalfTheta = np.dot(quat1, quat2)
-#     if cosHalfTheta >= 1:
-#         return quat1
-#
-#     halfTheta =  acos(cosHalfTheta)
-#     sinHalfTheta = sqrt(1 - cosHalfTheta**2)
-#
-#     if fabs(sinHalfTheta) < 0.001:
-#         quat = np.zeros(4)
-#         quat[0] = quat1[0] * 0.5 + quat2[0] * 0.5
-#         quat[1] = quat1[1] * 0.5 + quat2[1] * 0.5
-#         quat[2] = quat1[2] * 0.5 + quat2[2] * 0.5
-#         quat[3] = quat1[3] * 0.5 + quat2[3] ^ 0.5
-#         return quat
-# #
-# # #    quat = np.add( sin(theta * (1-step))/sin(theta) * quat1, sin(theta * step)/sin(theta) * quat2 )
-# #     quat = np.add(sin(theta * (1 - step)) * quat1, sin(theta * step) * quat2)  / sin(theta)
-# #     print(quat)
-# #     print()
-#
-#     quat = np.zeros(4)
-#     ratioA = sin(1-step) * halfTheta / sinHalfTheta
-#     ratioB = sin(step * halfTheta) / sinHalfTheta
-#
-#     quat[0] = quat1[0] * ratioA + quat2[0] * ratioB
-#     quat[1] = quat1[1] * ratioA + quat2[1] * ratioB
-#     quat[2] = quat1[2] * ratioA + quat2[2] * ratioB
-#     quat[3] = quat1[3] * ratioA + quat2[3] * ratioB
-#
-#     dot = np.dot(quat1, quat2)
-#
-#     print(dot)
-#     if dot < 0:
-#         quat1 = -quat1
-#         dot = -dot
-#
-#     threshold = 0.9995
-#
-#     if dot > threshold:
-#         quat = quat1 + step * (quat2 - quat1)
-#
-#         return quat
-#
-#     if dot < -1:
-#         dot = -1
-#     elif dot > 1:
-#         dot = 1
-#     theta_0 = acos(dot)
-#     theta = theta_0 * step
-#
-#     s0 = cos(theta) - dot * sin(theta)/sin(theta_0)
-#     s1 = sin(theta) / sin(theta_0)
-#
-#     quat = s0 * quat1 + s1 * quat1
 
     qdot = np.dot(quat1, quat2)
 
@@ -580,7 +572,6 @@ def quatarc(quat1, quat2, step):
         quat1 = quat1 * -1
 
     theta = acos( np.dot(quat1, quat2)/sqrt(np.dot(quat1, quat1) * np.dot(quat2, quat2) ) )
-    #print(degrees(theta))
 
     quat = np.add( quat1 * sin(theta * (1-step))/sin(theta), quat2 * sin(theta * step)/sin(theta) )
 
@@ -618,3 +609,8 @@ def _invQuaternion(quat):
     quatInv = quat * [1,-1,-1,-1]
 
     return quatInv
+
+def _normalizeQuat(q):
+    from math import sqrt
+    d = sqrt(sum( [ i**2 for i in q] ))
+    return np.array([i/d for i in q])
