@@ -3,12 +3,24 @@ from nglview import NGLWidget,HTMDTrajectory
 from tempfile import NamedTemporaryFile
 import numpy as np
 import os
+from glob import glob
+import logging
+import shutil
+import moviepy.editor as mpy
+
+
+logger = logging.getLogger(__name__)
 
 class Scene:
 
-    def __init__(self, id=None, reprs=None):
+    def __init__(self, id=None, reprs=None, frame=None, delay=1):
 
         self.id = id
+        if frame == None:
+            logger.warning('Frame argument not passed. The scene will be applied at the initial frame')
+            frame = 0
+        self.frame = frame
+        self.delay = delay
 
         # vmd
         self.representations = reprs
@@ -23,7 +35,14 @@ class Scene:
 
 class Transaction:
 
-    def __init__(self, begScene, endScene, scenes=None):
+    def __init__(self, begScene, endScene, scenes=None, id=None, frame=None, delay=1):
+
+        if frame == None:
+            logger.warning('Frame argument not passed. The transaction will be applied at the initial frame')
+            frame = 0
+        self.id = id
+        self.frame = frame
+        self.delay = delay
 
         self.begScene = begScene
         self.endScene = endScene
@@ -35,7 +54,6 @@ class Transaction:
 
         # ngl -->  nglview does not allow to decompose the orientation matrix. Thus we have to store the delta matrix
         #          to apply.
-
 
 
 class MovieMaker:
@@ -72,12 +90,12 @@ class MovieMaker:
             viewer.add_trajectory(traj)
             mol.reps._repsNGL(viewer)
 
-    def _getScene(self, id=None, repr='current'):
+    def _getScene(self, frame, id=None, repr='current'):
         # repr current, previous
         viewer = self.viewer
         mol = self.mol
 
-        scene = Scene(id=id, reprs=mol.reps)
+        scene = Scene(id=id,  reprs=mol.reps, frame=frame)
 
         if isinstance(viewer, VMD):
             rotate_matrix = self._matrixFromVMD('rotate')
@@ -96,14 +114,16 @@ class MovieMaker:
 
         return scene
 
-    def saveScene(self):
+    def saveScene(self, frame=None):
         _id = len(self.scenes)
 
-        scene = self._getScene(id=_id)
+        scene = self._getScene(id=_id, frame=frame)
 
         self.scenes.append(scene)
 
     def retrieveScene(self, scene):
+        #warning _record working only for VMD
+
         if isinstance(scene, Scene):
             scene = scene
 
@@ -128,9 +148,6 @@ class MovieMaker:
 
             self._updateView(_class, method, args)
 
-            #viewer.send('molinfo top set {{rotate_matrix center_matrix scale_matrix global_matrix}} '
-             #           '{{{} {} {} {}}}'.format(rot_mat, cent_mat, scale_mat, glob_mat))
-
         elif isinstance(viewer, NGLWidget):
             _class = viewer.control
             method = 'orient'
@@ -147,7 +164,7 @@ class MovieMaker:
         cmd = getattr(_class, method)
         cmd(args)
 
-    def record(self, moviename='mymovie', outdir="imagesVideo", overwrite=False, fps=None, spf=None):
+    def record(self, moviename='mymovie.avi', outdir="imagesVideo", overwrite=False, fps=None, spf=None):
         viewer = self.viewer
         mol = self.mol
 
@@ -155,17 +172,23 @@ class MovieMaker:
             if not overwrite:
                 raise IsADirectoryError('The directory exists, change the name or set as True the overwrite argument')
             else:
-                os.rmdir(outdir)
+                shutil.rmtree(outdir)
         os.mkdir(outdir)
 
 
         if isinstance(viewer, VMD):
-            self._recordVMD(viewer, mol, outdir)
+            self._setUpRecordingVMD(viewer)
+            self.play(_record=True, _outdir=outdir)
+            images = glob(os.path.join(outdir, '*.png'))
+            # TODO duration, fps, spf
+            clip = mpy.ImageSequenceClip(sorted(images), fps=24)#, durations=np.ones(len(images))*0.2)
+            clip.write_videofile(moviename, fps=24, codec='png')
+
 
         elif isinstance(viewer, NGLWidget):
             pass
 
-    def _recordVMD(self, viewer, mol, outdir):
+    def _setUpRecordingVMD(self, viewer):
 
         preload_tcl = """global env
 set Arch [vmdinfo arch]
@@ -175,73 +198,148 @@ set tach "$vmdEnv/tachyon_$Arch"
 
 """
         viewer.send(preload_tcl)
-        frames = mol.numFrames
 
-        for nf in range(frames):
-            nframe = "%06d" % nf
-            tcl = """animate goto {}
-display update ui
-set filename {}/image.{}.tga
-render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
-""".format(nf, outdir, nframe)
-            viewer.send(tcl)
-            if nf == 3:
-                break
+    def render(self, fname):
+        # working for vmd only
+        viewer = self.viewer
+
+        tcl = """set fname {}.tga
+render Tachyon $fname "$tach" -aasamples 12 %s -format TARGA -o %s
+        
+        """.format(fname)
+        viewer.send(tcl)
+        os.system('convert {}.tga {}.png'.format(fname, fname))
+        os.remove('{}.tga'.format(fname))
+
+    def _playTraj(self, viewer, numFrames, timeline, delay, _record, _outdir):
+        from time import sleep
+
+        # WARNING only VMD
+
+        play_frames = list(range(numFrames))
+
+        for el in timeline:
+            place_idx = play_frames.index(el.frame) + 1
+            while not isinstance(play_frames[place_idx], int):
+                place_idx += 1
+            play_frames.insert(place_idx, el)
+
+        print(play_frames)
+
+        for n, i in enumerate(play_frames[:20]):
+            if _record:
+                nf = "%06d" % len(glob(os.path.join(_outdir, '*.png')))
+                fname = os.path.join(_outdir, "image.{}".format( nf))
+            print(i)
+            if isinstance(i, int):
+                viewer.send("animate goto {}".format(i))
+                if _record:
+                    self.render(fname)
+                sleep(delay)
+            elif isinstance(i, Scene):
+                print('rendering scene')
+                self.retrieveScene(i)
+                if _record:
+                    self.render(fname)
+                sleep(i.delay)
+            elif isinstance(i, Transaction):
+                print("rendering transaction")
+                self.playTransaction(i, _record, _outdir)
+                sleep(i.delay)
 
 
-    def play(self):
+    def _playStructure(self, viewer, timeline):
+        pass
+
+    def play(self,  delay=0.3, _record=False, _outdir=None):
         from time import sleep
 
         viewer = self.viewer
 
         if isinstance(viewer, NGLWidget):
-            print('Not stable. At the moment it does not work')
+            print('Not available. At the moment it does not work')
             return
 
-        for element in self.timeline:
-            if isinstance(element, Scene):
-                scene = element
-                self.retrieveScene(scene)
+        mol = self.mol
+        if len(self.timeline) == 0:
+            self.autoTimeline()
+        timeline = self.timeline
 
-            if isinstance(element, Transaction):
-                transaction = element
-                for scene in transaction.scenes:
+        numFrames = mol.numFrames
+
+        if numFrames > 1:
+            self._playTraj(viewer, numFrames, timeline, 0.3, _record, _outdir)
+        else:
+            if len(timeline) == 0:
+                raise Exception('The Molecule object is a single frames with not scenes created.')
+            self._playStructure(viewer, timeline)
+            #
+        # for element in self.timeline:
+        #     if isinstance(element, Scene):
+        #         scene = element
+        #         self.retrieveScene(scene)
+        #
+        #     if isinstance(element, Transaction):
+        #         transaction = element
+        #         self.playTransaction(transaction)
                     #TODO  temporary approach until nglview allows to decompose the orientation matrix
-                    if isinstance(viewer, NGLWidget):
-                        _class = viewer.control
-                        method = 'apply_matrix'
-                        mat = scene.orientation_delta
-                        args = np.concatenate(mat).tolist()
-                        self._updateView(_class, method, args)
-                        viewer.sync_view()
-                    else:
-                        self.retrieveScene(scene)
+                    # if isinstance(viewer, NGLWidget):
+                    #     _class = viewer.control
+                    #     method = 'apply_matrix'
+                    #     mat = scene.orientation_delta
+                    #     args = np.concatenate(mat).tolist()
+                    #     self._updateView(_class, method, args)
+                    #     viewer.sync_view()
+
+    def playTransaction(self, transaction, _record=False, _outdir=None):
+
+        if _record and _outdir is None:
+            raise ValueError('_outdir argument required if _record is True')
+
+        for scene in transaction.scenes:
+            self.retrieveScene(scene)
+
+            if _record:
+                n = "%06d" % len(glob(os.path.join(_outdir, '*.png')))
+                fname = os.path.join(_outdir, "image.{}".format(n))
+                self.render(fname)
+
+
+
 
     def autoTimeline(self):
-        tmp_timeline = []
+        from collections import Counter
 
-        transaction_skipped = []
+        tmp_timeline = self.scenes + self.animations
 
-        for i in range(len(self.scenes)):
-            scene = self.scenes[i]
-            tmp_timeline.append(scene)
+        tmp_timeline = sorted(tmp_timeline, key= lambda k: k.frame)
+        tmp_breakpoints = {e: e.frame for e in tmp_timeline}
 
-            for t in self.animations:
-                if t.begId == i  and t not in tmp_timeline:
-                    if t.endId == i + 1:
-                        tmp_timeline.append(t)
-                    else:
-                        transaction_skipped.append(t)
+        breakpoints_counts = Counter(tmp_breakpoints.values())
 
-        self.timeline = tmp_timeline
-        if len(transaction_skipped) != 0:
-            print("Some transactions were not possible to place in timeline ( n transaction skipped: {}) ".format(len(transaction_skipped)))
+        timeline = []
+        for k in breakpoints_counts.keys():
+            counts = breakpoints_counts[k]
+            if counts > 1:
+                sub_timeline = []
+                elements = [el for el, fr in tmp_breakpoints.items() if fr == k]
+                scenes = [el for el in elements if isinstance(el, Scene)]
+                scenes = sorted(scenes, key= lambda k: k.id)
+                timeline.extend(scenes)
+                transactions = [el for el in elements if isinstance(el, Transaction)]
+                transactions = sorted(transactions, key=lambda k: k.id)
+                timeline.extend(transactions)
 
+            else:
+                el = [el for el, fr in tmp_breakpoints.items() if fr == k][0]
+                timeline.append(el)
 
+        #print("Timeline:", [(el, el.frame, el.id) for el in timeline])
+        self.timeline = timeline
 
+    def transaction(self, begSceneId, endSceneId, numsteps=50, frame=None):
 
-    def transaction(self, begSceneId, endSceneId, numsteps=50):
-        #self.retrieveScene(begSceneId)
+        _id = len(self.animations)
 
         begScene = self.scenes[begSceneId]
         endScene = self.scenes[endSceneId]
@@ -249,14 +347,14 @@ render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
         viewer = self.viewer
 
         if isinstance(viewer, VMD):
-            listScenes = self._transactionVMD(begScene, endScene, numsteps)
+            listScenes = self._transactionVMD(begScene, endScene, numsteps, frame)
         elif isinstance(viewer, NGLWidget):
-            listScenes = self._transactionNGL(begScene, endScene, numsteps)
+            listScenes = self._transactionNGL(begScene, endScene, numsteps, frame)
 
-        T = Transaction(begScene, endScene, listScenes)
+        T = Transaction(begScene, endScene, listScenes, id=_id, frame=frame)
         self.animations.append(T)
 
-    def _transactionNGL(self, begScene, endScene, numsteps):
+    def _transactionNGL(self, begScene, endScene, numsteps, frame):
 
         current_orientation = begScene.orientation_matrix
 
@@ -270,14 +368,14 @@ render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
 
         list_scenes = []
         for i in range(numsteps+1):
-            sc = Scene()
+            sc = Scene(frame=frame)
             sc.orientation_delta = current_deltaMatrix
 
             list_scenes.append(sc)
 
         return list_scenes
 
-    def _transactionVMD(self, begScene, endScene, numsteps):
+    def _transactionVMD(self, begScene, endScene, numsteps, frame):
 
         diff_center = endScene.center_matrix - begScene.center_matrix
         diff_scale = endScene.scale_matrix - begScene.scale_matrix
@@ -302,7 +400,7 @@ render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
             current_scaleMatrix = np.add(current_scaleMatrix, diff_scale * stepsize)
             current_globalMatrix = np.add(current_globalMatrix, diff_global * stepsize)
 
-            sc = Scene()
+            sc = Scene(frame=frame)
             sc.rotate_matrix = current_rotateMatrix
             sc.center_matrix = current_centerMatrix
             sc.scale_matrix = current_scaleMatrix
@@ -376,9 +474,6 @@ render Tachyon $filename "$tach" -aasamples 12 %s -format TARGA -o %s
 
         else:
             raise ValueError('Not a valid viewer.')
-
-
-
 
 def matrixToEuler(matrix):
     from math import atan2, asin, cos, pi
