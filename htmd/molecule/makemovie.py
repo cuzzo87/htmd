@@ -70,6 +70,8 @@ class MovieMaker:
 
         self.timeline = []
 
+        self._currentRepresentations = None
+
         self._initStage()
 
     def _initStage(self):
@@ -84,7 +86,6 @@ class MovieMaker:
         if initReps and isinstance(viewer, VMD):
             viewer.send('color Display Background {}'.format(self.background))
             viewer.loadMol(mol)
-            mol.reps._repsVMD(viewer)
         elif initReps and isinstance(viewer, NGLWidget):
             traj = HTMDTrajectory(mol)
             viewer.add_trajectory(traj)
@@ -151,7 +152,7 @@ set stringrepslist [ join $repslist "\n"]
         list_reps = f.readlines()
         for rep in list_reps:
             l = [ _.strip() for _ in rep.strip().split(',') ]
-            r.add(l[1], l[0], l[2])
+            r.add(l[1], l[0], l[2], l[3])
         return r
 
     def saveScene(self, frame=None, clonereps=False, fromscene=-1):
@@ -187,13 +188,23 @@ set stringrepslist [ join $repslist "\n"]
                    '{{{} {} {} {}}}'.format(rot_mat, cent_mat, scale_mat, glob_mat)
             self._updateView(_class, method, args)
 
-            _class = viewer
-            method = 'send'
-            args = "set nreps [molinfo top get numreps]\nfor {set i 0} {$i < $nreps } {incr i}  {mol delrep top 0}"
 
-            self._updateView(_class, method, args)
+            change = False
+            if self._currentRepresentations is None:
+                change = True
+            elif self._currentRepresentations.list() != scene.representations.list():
+                change = True
 
-            scene.representations._repsVMD(viewer)
+            if change:
+                _class = viewer
+                method = 'send'
+                args = "set nreps [molinfo top get numreps]\nfor {set i 0} {$i < $nreps } {incr i}  {mol delrep top 0}"
+
+                self._updateView(_class, method, args)
+
+                scene.representations._repsVMD(viewer)
+
+                self._currentRepresentations = scene.representations
 
         elif isinstance(viewer, NGLWidget):
             _class = viewer.control
@@ -452,6 +463,7 @@ render Tachyon $fname "$tach" -aasamples 12 %s -format TARGA -o %s
             sc.center_matrix = current_centerMatrix
             sc.scale_matrix = current_scaleMatrix
             sc.global_matrix = current_globalMatrix
+            sc.representations = begScene.representations
 
             list_scenes.append(sc)
         return list_scenes
