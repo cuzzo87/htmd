@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class Scene:
 
-    def __init__(self, id=None, reprs=None, frame=None, delay=1):
+    def __init__(self, id=None, reps=None, frame=None, delay=1):
 
         self.id = id
         if frame == None:
@@ -23,7 +23,7 @@ class Scene:
         self.delay = delay
 
         # vmd
-        self.representations = reprs
+        self.representations = reps
         self.rotate_matrix = None
         self.center_matrix = None
         self.scale_matrix = None
@@ -90,23 +90,31 @@ class MovieMaker:
             viewer.add_trajectory(traj)
             mol.reps._repsNGL(viewer)
 
-    def _getScene(self, frame, id=None, repr='current'):
+    def _getScene(self, frame, id, clonereps, fromscene):
         # repr current, previous
         viewer = self.viewer
         mol = self.mol
 
-        scene = Scene(id=id,  reprs=mol.reps, frame=frame)
+
+
+        scene = Scene(id=id,  reps=mol.reps, frame=frame)
 
         if isinstance(viewer, VMD):
             rotate_matrix = self._matrixFromVMD('rotate')
             center_matrix = self._matrixFromVMD('center')
             scale_matrix = self._matrixFromVMD('scale')
             global_matrix = self._matrixFromVMD('global')
+            if clonereps == True:
+                ref_scene = self.scenes[fromscene]
+                reps = ref_scene.representations
+            else:
+                reps = self._repsFromVMD()
 
             scene.rotate_matrix = rotate_matrix
             scene.center_matrix = center_matrix
             scene.scale_matrix = scale_matrix
             scene.global_matrix = global_matrix
+            scene.representations = reps
 
         if isinstance(viewer, NGLWidget):
             orientation_matrix = self._matrixFromNGL()
@@ -114,10 +122,42 @@ class MovieMaker:
 
         return scene
 
-    def saveScene(self, frame=None):
+    def _repsFromVMD(self):
+
+        from htmd.molecule.molecule import Representations
+        viewer = self.viewer
+        mol = self.mol
+        outputFile = NamedTemporaryFile(delete=False).name
+
+        tcl = """set numreps [molinfo top get numreps]
+set repslist {}
+puts "test"
+
+
+for {set i 0} {$i < $numreps} {incr i} {
+    puts $i
+    set replist [molinfo top get "{rep $i} {selection $i} {color $i} {material $i}"]
+    set stringreps [join $replist ", " ]
+    lappend repslist $stringreps
+}
+set stringrepslist [ join $repslist "\n"]
+"""
+        viewer.send(tcl)
+        r = Representations(mol)
+
+        self._writeTclOutput('stringrepslist', outputFile)
+
+        f = open(outputFile, 'r')
+        list_reps = f.readlines()
+        for rep in list_reps:
+            l = [ _.strip() for _ in rep.strip().split(',') ]
+            r.add(l[1], l[0], l[2])
+        return r
+
+    def saveScene(self, frame=None, clonereps=False, fromscene=-1):
         _id = len(self.scenes)
 
-        scene = self._getScene(id=_id, frame=frame)
+        scene = self._getScene(frame, _id, clonereps, fromscene)
 
         self.scenes.append(scene)
 
@@ -133,6 +173,7 @@ class MovieMaker:
             scene = self.scenes[scene]
 
         viewer = self.viewer
+        mol = self.mol
 
         if isinstance(viewer, VMD):
             rot_mat = self._matrixToVMD(scene, 'rotate')
@@ -144,9 +185,15 @@ class MovieMaker:
             method = 'send'
             args = 'molinfo top set {{rotate_matrix center_matrix scale_matrix global_matrix}} ' \
                    '{{{} {} {} {}}}'.format(rot_mat, cent_mat, scale_mat, glob_mat)
+            self._updateView(_class, method, args)
 
+            _class = viewer
+            method = 'send'
+            args = "set nreps [molinfo top get numreps]\nfor {set i 0} {$i < $nreps } {incr i}  {mol delrep top 0}"
 
             self._updateView(_class, method, args)
+
+            scene.representations._repsVMD(viewer)
 
         elif isinstance(viewer, NGLWidget):
             _class = viewer.control
