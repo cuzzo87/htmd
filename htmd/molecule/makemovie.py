@@ -22,6 +22,14 @@ class Scene:
         self.frame = frame
         self.delay = delay
 
+        self.rollEnabled = False
+
+        self.roll_params = {'selection': 'protein and name CA',
+                            'axis':'z',
+                            'degree':10,
+                            'steps':36,
+                            'delay':0.2}
+
         # vmd
         self.representations = reps
         self.rotate_matrix = None
@@ -32,6 +40,67 @@ class Scene:
         # ngl
         self.orientation_matrix = None
         self.orientation_delta = None
+
+    def setRoll(self, sel='protein and name CA', axis='z', degree=10, steps=36, delay=0.2):
+        self.rollEnabled = True
+        self.roll_params = {'selection':sel,
+                         'axis':axis,
+                         'degree':degree,
+                         'steps':steps,
+                         'delay':delay}
+
+    def _applyRoll(self, viewer, _record):
+            from htmd.rotationmatrix import rotationMatrix
+            from math import radians
+            from time import sleep
+            from argparse import Namespace
+
+            _axis = {'x': 0, 'X': 0,
+                     'y': 1, 'Y': 1,
+                     'z': 2, 'Z': 2}
+
+            _choices = np.unique(list(_axis.keys()) + list(_axis.values()))
+
+            params = Namespace(**self.roll_params)
+
+            if params.axis not in _choices:
+                raise ValueError('The axis should be a valid one: {}'.format(_choices))
+
+            _class = viewer
+            _method = 'send'
+
+
+            axis = params.axis if isinstance(params.axis, int) else _axis[params.axis]
+
+            rotate_matrix = _matrixFromVMD(viewer, 'rotate')
+
+            transpose = np.transpose(rotate_matrix)
+            rotate_axis = transpose[axis][:3]
+            rotate_matrixAxis = rotationMatrix(rotate_axis, radians(params.degree))
+            y = np.zeros((3, 1))
+            x = np.zeros((1, 4))
+            x[-1][-1] = 1
+            rotate_matrixAxis = np.append(rotate_matrixAxis, y, axis=1)
+            rotate_matrixAxis = np.append(rotate_matrixAxis, x, axis=0)
+
+            tcl = """set old_center [molinfo top get center]
+set sel [atomselect top "{}"]
+set new_center [measure center $sel]
+molinfo top set center  [list $new_center]
+puts "almeno qui"
+            """.format(params.selection)
+
+            _updateView(_class, _method, tcl)
+
+            for i in range(params.steps):
+                rotate_matrix = _matrixFromVMD(viewer, 'rotate')
+
+                rotate_matrix_new = np.matmul(rotate_matrixAxis, rotate_matrix)
+                mat = str(rotate_matrix_new.tolist())
+                mat = mat.replace('[', '{').replace(']', '}').replace(',', '')
+                tcl = "molinfo top set rotate_matrix {{ {} }}".format(mat)
+                _updateView(_class, _method, tcl)
+                sleep(params.delay)
 
 class Transaction:
 
@@ -190,10 +259,15 @@ set stringrepslist [ join $repslist "\n"]
 
 
             change = False
+
             if self._currentRepresentations is None:
                 change = True
-            elif self._currentRepresentations.list() != scene.representations.list():
-                change = True
+            else:
+                curr_rep = [[r.sel, r.style, r.color, r.material, r.selupdate] for r in
+                            self._currentRepresentations.replist]
+                new_rep = [[r.sel, r.style, r.color, r.material, r.selupdate] for r in scene.representations.replist]
+                if curr_rep != new_rep:
+                    change = True
 
             if change:
                 _class = viewer
@@ -284,7 +358,7 @@ render Tachyon $fname "$tach" -aasamples 12 %s -format TARGA -o %s
 
         print(play_frames)
 
-        for n, i in enumerate(play_frames[:20]):
+        for n, i in enumerate(play_frames):
             if _record:
                 nf = "%06d" % len(glob(os.path.join(_outdir, '*.png')))
                 fname = os.path.join(_outdir, "image.{}".format( nf))
@@ -299,6 +373,8 @@ render Tachyon $fname "$tach" -aasamples 12 %s -format TARGA -o %s
                 self.retrieveScene(i)
                 if _record:
                     self.render(fname)
+                if i.rollEnabled:
+                    i._applyRoll(viewer, _record)
                 sleep(i.delay)
             elif isinstance(i, Transaction):
                 print("rendering transaction")
@@ -361,9 +437,6 @@ render Tachyon $fname "$tach" -aasamples 12 %s -format TARGA -o %s
                 n = "%06d" % len(glob(os.path.join(_outdir, '*.png')))
                 fname = os.path.join(_outdir, "image.{}".format(n))
                 self.render(fname)
-
-
-
 
     def autoTimeline(self):
         from collections import Counter
@@ -768,3 +841,34 @@ def _normalizeQuat(q):
     from math import sqrt
     d = sqrt(sum( [ i**2 for i in q] ))
     return np.array([i/d for i in q])
+
+######## tmp
+def _matrixFromVMD( viewer, matrixtype):
+
+    outputFile = NamedTemporaryFile(delete=False).name
+
+    viewer.send('set R [molinfo top get {}_matrix]'.format(matrixtype))
+
+
+    _writeTclOutput(viewer, 'R', outputFile)
+
+    f = open(outputFile, 'r')
+    txt_Matrix = f.read().replace('{', '').replace('}', '')
+    matrix = np.array(txt_Matrix.split(), dtype=float)
+    matrix = matrix.reshape(4,4)
+
+    return matrix
+
+
+def _updateView( _class, method, args):
+
+    cmd = getattr(_class, method)
+    cmd(args)
+
+def _writeTclOutput(viewer, outputVariable, outputFile):
+
+    viewer = viewer
+
+    viewer.send('set Fname [open {} "w"]'.format(outputFile))
+    viewer.send('puts -nonewline $Fname ${}'.format(outputVariable) )
+    viewer.send('close $Fname')
