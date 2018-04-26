@@ -8,17 +8,21 @@ import logging
 import shutil
 import moviepy.editor as mpy
 
-
 logger = logging.getLogger(__name__)
+
+#### add saving and loadiing of the timeline with picke
+
 
 class Scene:
 
     def __init__(self, id=None, reps=None, frame=None, delay=1, log=True):
 
         self.id = id
-        if frame == None and log:
-            logger.warning('Frame argument not passed. The scene will be applied at the initial frame')
+        if frame == None:
             frame = 0
+            if log:
+                logger.warning('Frame argument not passed. The scene will be applied at the initial frame')
+
         self.frame = frame
         self.delay = delay
 
@@ -41,6 +45,11 @@ class Scene:
         self.orientation_matrix = None
         self.orientation_delta = None
 
+    def clone(self, scene):
+
+        for k,v in scene.__dict__.items():
+            self.__dict__[k] = v
+
     def setRoll(self, sel='protein and name CA', axis='z', degree=10, steps=36, delay=0.2):
         self.rollEnabled = True
         self.roll_params = {'selection':sel,
@@ -52,25 +61,40 @@ class Scene:
 
 class Transaction:
 
-    def __init__(self, begScene, endScene, scenes=None, id=None, frame=None, delay=1, log=True):
+    def __init__(self, begScene=None, endScene=None, scenes=None, id=None, frame=None, delay=1, log=True):
 
-        if frame == None and log:
-            logger.warning('Frame argument not passed. The transaction will be applied at the initial frame')
+        if frame == None:
             frame = 0
+            if log:
+                logger.warning('Frame argument not passed. The transaction will be applied at the initial frame')
+
         self.id = id
         self.frame = frame
         self.delay = delay
 
         self.begScene = begScene
         self.endScene = endScene
-        self.begId = self.begScene.id
-        self.endId = self.endScene.id
+        self.begId = begScene.id if begScene is not None else None
+        self.endId = endScene.id if endScene is not None else None
 
         # vmd
         self.scenes = [] if scenes == None else scenes
 
         # ngl -->  nglview does not allow to decompose the orientation matrix. Thus we have to store the delta matrix
         #          to apply.
+
+    def clone(self, transaction):
+
+        for k, v in transaction.__dict__.items():
+            if k == 'scenes':
+                scenes = []
+                for sc in v:
+                    sc_cloned = Scene(log=False)
+                    sc_cloned.clone(sc)
+                    scenes.append(sc_cloned)
+                self.__dict__[k] = scenes
+            else:
+                self.__dict__[k] = v
 
 
 class MovieMaker:
@@ -156,7 +180,9 @@ class MovieMaker:
 
         viewer.renderScene(scene, updateReps=change)
 
-    def record(self, moviename='mymovie.avi', outdir="imagesVideo", skip=1, overwrite=False, fps=None, spf=None):
+    def record(self, moviename='mymovie.avi', outdir="imagesVideo", frameslist=None, skip=1, overwrite=False, fps=24, spf=0.2):
+        from math import floor
+
         viewer = self.viewer
 
         extension = os.path.splitext(moviename)[-1]
@@ -175,68 +201,98 @@ class MovieMaker:
 
         viewer._setUpRecording()
 
-        self.play(skip=skip, _record=True, _outdir=outdir)
-        images = glob(os.path.join(outdir, '*.png'))
+        map_images = self.play(skip=skip, frameslist=frameslist, _record=True, _outdir=outdir)
+
+        multiplier = floor(fps * spf)
+        images = sorted(glob(os.path.join(outdir, '*.png')))
+
+        images = [ [im] * multiplier if im in map_images['frames'] else [im]  for im in images  ]
+
+        images = [ im for ims in images for im in ims ]
 
         # TODO duration, fps, spf
-        clip = mpy.ImageSequenceClip(sorted(images), fps=24)#, durations=np.ones(len(images))*0.2)
-        clip.write_videofile(moviename, fps=24, codec='png')
+        clip = mpy.ImageSequenceClip(images, fps=fps)#, durations=np.ones(len(images))*0.2)
+        clip.write_videofile(moviename, fps=fps, codec='png')
 
-    def _playTraj(self, viewer, numFrames, timeline, skip, delay, _record, _outdir):
+    def _playTraj(self, viewer, numFrames, timeline, frameslist, skip, delay, _record, _outdir):
         from time import sleep
         from tqdm import trange
 
+        import sys
+        if len(frameslist) != 0:
+            play_frames = frameslist
+        else:
+            play_frames = list(range(numFrames))
 
-        play_frames = list(range(numFrames))
+        play_frames = [nf for i, nf in enumerate(play_frames) if i % skip == 0]
 
-        play_frames = [f for i, f in enumerate(play_frames) if i % skip == 0]
+        breakpoints = [el.frame for el in timeline ]
+#        print(breakpoints)
 
-        for el in timeline:
-            place_idx = play_frames.index(el.frame) + 1
-            while not isinstance(play_frames[place_idx], int):
-                place_idx += 1
-            play_frames.insert(place_idx, el)
-
-
-
-        print(play_frames)
+        map_images = {'frames':[],
+                      'animations':[]}
 
         for  i in trange(len(play_frames)):
-            el = play_frames[i]
+            frame = play_frames[i]
             if _record:
                 nf = "%06d" % len(glob(os.path.join(_outdir, '*.png')))
                 fname = os.path.join(_outdir, "image.{}".format( nf))
+                map_images['frames'].append("{}.png".format(fname))
 
-            if isinstance(el, int):
-                viewer.goToFrame(el*skip)
-                if _record:
-                    viewer.render(fname)
+            viewer.goToFrame(frame)
+            if _record:
+                viewer.render(fname)
                 sleep(delay)
-            elif isinstance(el, Scene):
-                print('rendering scene')
-                self.retrieveScene(el)
-                if _record:
-                    viewer.render(fname)
-                #TODO check it
-                if el.rollEnabled:
-                    viewer.applyRoll(el, _record, _outdir)
 
-                sleep(el.delay)
-            elif isinstance(el, Transaction):
+            if len(breakpoints) == 0:
+                continue
 
-                self.playTransaction(el, _record, _outdir)
-                sleep(el.delay)
+            while breakpoints[0] == frame:
+                el = timeline.pop(0)
+                breakpoints.pop(0)
+                if isinstance(el, Scene):
+                    #print('rendering scene')
+                    self.retrieveScene(el)
+                    if _record:
+                        viewer.render(fname)
+                        map_images['frames'].append("{}.png".format(fname))
+                    #TODO check it
+                    if el.rollEnabled:
+                        viewer.applyRoll(el, _record, _outdir)
+                    sleep(el.delay)
+                elif isinstance(el, Transaction):
+                   # print('rendering transaction')
+                    self.playTransaction(el, _record, _outdir)
+                    sleep(el.delay)
+                if len(breakpoints) == 0:
+                    break
+
+        if _record:
+            all_images = glob(os.path.join(_outdir, '*.png'))
+            animations_images = list(set(all_images) - set(map_images['frames']))
+
+            map_images['animations'] = animations_images
+        return map_images
+
+
 
     def _playStructure(self, viewer, timeline):
         pass
 
-    def play(self,  delay=0.3, skip=1, _record=False, _outdir=None):
+    def play(self,  delay=0.1, frameslist=None, skip=1, _record=False, _outdir=None):
 
         viewer = self.viewer
 
         if isinstance(viewer, NGLWidget):
             print('Not available. At the moment it does not work')
             return
+
+        if frameslist is not None:
+            if not isinstance(frameslist, list):
+                raise ValueError('"frameslist should be a list of frames or a list of lists')
+            frameslist = frameslist if isinstance(frameslist[0], list) else [frameslist]
+
+        frameslist = [] if frameslist is None else [fr for subset in frameslist for fr in subset]
 
         mol = self.mol
         if len(self.timeline) == 0:
@@ -246,7 +302,9 @@ class MovieMaker:
         numFrames = mol.numFrames
 
         if numFrames > 1:
-            self._playTraj(viewer, numFrames, timeline, skip, delay, _record, _outdir)
+            map_images = self._playTraj(viewer, numFrames, timeline, frameslist, skip, delay, _record, _outdir)
+            if _record:
+                return map_images
         else:
             if len(timeline) == 0:
                 raise Exception('The Molecule object is a single frames with not scenes created.')
@@ -269,31 +327,15 @@ class MovieMaker:
                 viewer.render(fname)
 
     def autoTimeline(self):
-        from collections import Counter
 
-        tmp_timeline = self.scenes + self.animations
+        tmp_timeline = sorted(self.scenes, key=lambda k: k.frame)
 
-        tmp_timeline = sorted(tmp_timeline, key= lambda k: k.frame)
-        tmp_breakpoints = {e: e.frame for e in tmp_timeline}
+        for t in self.animations:
+            scene = self.scenes[t.begId]
+            idx = tmp_timeline.index(scene)
+            tmp_timeline.insert(idx+1, t)
 
-        breakpoints_counts = Counter(tmp_breakpoints.values())
-
-        timeline = []
-        for k in breakpoints_counts.keys():
-            counts = breakpoints_counts[k]
-            if counts > 1:
-                elements = [el for el, fr in tmp_breakpoints.items() if fr == k]
-                scenes = [el for el in elements if isinstance(el, Scene)]
-                scenes = sorted(scenes, key= lambda k: k.id)
-                timeline.extend(scenes)
-                transactions = [el for el in elements if isinstance(el, Transaction)]
-                transactions = sorted(transactions, key=lambda k: k.id)
-                timeline.extend(transactions)
-
-            else:
-                el = [el for el, fr in tmp_breakpoints.items() if fr == k][0]
-                timeline.append(el)
-
+        timeline = tmp_timeline
         #print("Timeline:", [(el, el.frame, el.id) for el in timeline])
         self.timeline = timeline
 
@@ -752,7 +794,7 @@ set tach "$vmdEnv/tachyon_$Arch"
             current_scaleMatrix = np.add(current_scaleMatrix, diff_scale * stepsize)
             current_globalMatrix = np.add(current_globalMatrix, diff_global * stepsize)
 
-            sc = Scene(frame=frame)
+            sc = Scene(frame=frame, log=False)
             sc.rotate_matrix = current_rotateMatrix
             sc.center_matrix = current_centerMatrix
             sc.scale_matrix = current_scaleMatrix
