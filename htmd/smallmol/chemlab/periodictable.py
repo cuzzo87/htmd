@@ -5,14 +5,13 @@ from rdkit import rdBase
 import numpy as np
 
 
-_heavy_atoms = ['C', 'N', 'O', 'F',
-                'Si','P', 'S', 'Cl', 'Br', 'I']
+_heavy_atoms = np.array(['C', 'N', 'O', 'F',
+                'Si','P', 'S', 'Cl', 'Br', 'I'])
 
-_hetero_atoms = ['N', 'O', 'F',
-                'Si','P', 'S', 'Cl', 'Br', 'I']
+_hetero_atoms = np.array(['N', 'O', 'F',
+                'Si','P', 'S', 'Cl', 'Br', 'I'])
 
-_hetero_atoms = ['N', 'O', 'F', 'P', 'S', 'Cl', 'Br', 'I']
-_halogen_atoms = ['F', 'Cl', 'Br', 'I']
+_halogen_atoms = np.array(['F', 'Cl', 'Br', 'I'])
 
 
 _hybridizations_IdxToType = HybridizationType.values
@@ -121,7 +120,6 @@ class PeriodicTable:
         element = smallmol.element[atomidx]
         btypes = smallmol.bondtypes[atomidx]
         #steric_number = len(smallmol.neighbors[atomidx])
-
         valences = list(pT.GetValenceList(element))
 
         # Some atoms can have multiple valid valences (like S, P). For them I should predict the most reliable one.
@@ -182,4 +180,10 @@ class PeriodicTable:
             atom_data.update({'attachTo': ''})
 
         return atom_data
+
+    def isHeteroAtom(self, element):
+        match = np.where(_hetero_atoms == element)[0]
+
+        return bool(len(match))
+
 
