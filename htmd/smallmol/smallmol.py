@@ -75,7 +75,7 @@ class SmallMol:
     """
 
     _atom_fields = ['idx', 'atomname', 'charge','formalcharge', 'element',  'chiral', 'hybridization',
-                    'neighbors', 'bondtypes', 'coords', '_chiraltags']
+                    'neighbors', 'bondtypes', 'coords', '_chiraltags', 'isaromatic']
 
     _mol_fields = ['ligname', 'totalcharge', '_mol']
 
